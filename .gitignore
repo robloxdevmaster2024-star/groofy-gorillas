@@ -1,0 +1,40 @@
+# ── Roblox / Rojo : fichiers de build (générés, jamais committés) ──
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+*.rbxl.lock
+*.rbxlx.lock
+
+# Sourcemap généré par luau-lsp
+sourcemap.json
+
+# ── Wally : dépendances installées (régénérées via `wally install`) ──
+/Packages/
+/ServerPackages/
+/DevPackages/
+wally-package-types.lua
+
+# ── Rokit : binaires des outils (gérés par rokit.toml) ──
+# rokit.toml EST committé ; le dossier d'install local ne l'est pas.
+.rokit/
+
+# ── VS Code ──
+# On garde .vscode/settings.json (config partagée luau-lsp/rojo) si besoin,
+# mais on ignore le reste. Décommente la ligne suivante pour tout ignorer :
+# .vscode/
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Divers ──
+*.log
+.env
+.env.local
+node_modules/
+
+# ── Outils annexes (pas le jeu) ──
+/rokit-main/       # source vendorée de l'outil Rokit lui-même
+/graphify-out/     # cache/artefacts générés par l'analyse graphify
