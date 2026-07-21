@@ -1,0 +1,114 @@
+[package]
+name = "rokit"
+version = "1.2.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/rojo-rbx/rokit"
+description = "Next-generation toolchain manager for Roblox projects"
+readme = "README.md"
+keywords = ["cli"]
+categories = ["command-line-interface"]
+
+[[bin]]
+name = "rokit"
+path = "src/main.rs"
+
+[lib]
+name = "rokit"
+path = "lib/lib.rs"
+
+[features]
+default = ["cli"]
+cli = [
+    "dep:anyhow",
+    "dep:clap",
+    "dep:console",
+    "dep:dialoguer",
+    "dep:indicatif",
+    "dep:pulldown-cmark-mdcat",
+    "dep:pulldown-cmark",
+    "dep:syntect",
+    "dep:tracing-subscriber",
+]
+
+[profile.release]
+opt-level = "z"
+strip = true
+lto = true
+
+[dependencies]
+dashmap = { version = "6.1", features = ["serde"] }
+dirs = "6.0"
+dunce = "1.0"
+filepath = "0.2"
+flate2 = "1.1"
+goblin = "0.10"
+lzma-rust2 = "0.14"
+postcard = { version = "1.1", features = ["alloc"] }
+semver = { version = "1.0", features = ["serde"] }
+tar = "0.4"
+tempfile = "3.19"
+thiserror = "2.0"
+unindent = "0.2"
+url = { version = "2.5", features = ["serde"] }
+which = "8.0"
+zip = "5.1"
+
+# Async / runtime dependencies
+
+async-once-cell = "0.5"
+async-signal = "0.2"
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "http2",
+    "json",
+    "gzip",
+    "brotli",
+    "deflate",
+] }
+reqwest-middleware = "0.4"
+reqwest-retry = "0.7"
+reqwest-tracing = "0.5"
+tokio = { version = "1.44", features = ["full"] }
+tracing = "0.1"
+
+# Serde / file format dependencies
+
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+serde_with = { version = "3.12", features = ["macros"] }
+toml_edit = "0.23"
+toml = "0.9"
+
+# CLI dependencies
+
+anyhow = { optional = true, version = "1.0" }
+clap = { optional = true, version = "4.5", features = ["derive"] }
+console = { optional = true, version = "0.16" }
+dialoguer = { optional = true, version = "0.12" }
+indicatif = { optional = true, version = "0.18" }
+
+pulldown-cmark-mdcat = { optional = true, version = "=2.6.1", default-features = false }
+pulldown-cmark = { optional = true, version = "=0.12.2" }
+syntect = { optional = true, version = "5.2.0" }
+
+tracing-subscriber = { optional = true, version = "0.3", features = [
+    "env-filter",
+] }
+
+[target.'cfg(windows)'.dependencies]
+command-group = { version = "5.0", features = ["with-tokio"] }
+winapi = { version = "0.3", features = ["processthreadsapi", "wincon"] }
+winreg = "0.55"
+
+[lints.clippy]
+all = { level = "deny", priority = -3 }
+cargo = { level = "warn", priority = -2 }
+pedantic = { level = "warn", priority = -1 }
+
+missing_panics_doc = { level = "allow", priority = 1 }
+module_name_repetitions = { level = "allow", priority = 1 }
+multiple_crate_versions = { level = "allow", priority = 1 }
+too_many_lines = { level = "allow", priority = 1 }
+unused_async = { level = "allow", priority = 1 }

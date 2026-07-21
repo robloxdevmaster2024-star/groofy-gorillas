@@ -27,8 +27,13 @@ end
 local function getOrCreate(parent, name)
 	return parent:FindFirstChild(name) or Instance.new("RemoteEvent", parent)
 end
-local zoneUpdateEvent = getOrCreate(lobbyFolder, "ZoneUpdate"); zoneUpdateEvent.Name = "ZoneUpdate"
-local playerZoneEvent = getOrCreate(lobbyFolder, "PlayerZone"); playerZoneEvent.Name = "PlayerZone"
+local zoneUpdateEvent    = getOrCreate(lobbyFolder, "ZoneUpdate"); zoneUpdateEvent.Name = "ZoneUpdate"
+local playerZoneEvent    = getOrCreate(lobbyFolder, "PlayerZone"); playerZoneEvent.Name = "PlayerZone"
+local requestJoinEvent   = getOrCreate(lobbyFolder, "RequestJoinQueue"); requestJoinEvent.Name = "RequestJoinQueue"
+local requestLeaveEvent  = getOrCreate(lobbyFolder, "RequestLeaveQueue"); requestLeaveEvent.Name = "RequestLeaveQueue"
+local getGamemodesFunc   = lobbyFolder:FindFirstChild("GetGamemodes") or Instance.new("RemoteFunction")
+getGamemodesFunc.Name    = "GetGamemodes"
+getGamemodesFunc.Parent  = lobbyFolder
 
 -- ===== Constantes =====
 local COUNTDOWN      = 15   -- secondes avant le lancement
@@ -61,11 +66,15 @@ local queues : { [string]: { players: { [Player]: boolean }, inCountdown: boolea
 -- zone actuelle de chaque joueur
 local playerZone : { [Player]: string? } = {}
 
+-- joueurs ayant rejoint la file via le bouton "Jouer" (pas de position à vérifier)
+local queuedViaButton : { [Player]: boolean } = {}
+
 -- ===== Forward declarations (récursion mutuelle) =====
 local checkAndMaybeCountdown
 local startRound
 local returnToLobby
 local removeFromQueues
+local joinQueue
 
 -- ===== Helpers =====
 local function banner(text)
@@ -208,24 +217,14 @@ local function setupZonePart(part: BasePart, gamemodeName: string)
 	part.Touched:Connect(function(hit)
 		local player = Players:GetPlayerFromCharacter(hit.Parent)
 		if not player then return end
-		if playerZone[player] ~= gamemodeName then
-			-- Retirer de l'ancienne zone
-			if playerZone[player] then
-				removeFromQueues(player)
-			end
-			-- Rejoindre la nouvelle
-			playerZone[player]             = gamemodeName
-			queues[gamemodeName].players[player] = true
-			updateBillboard(gamemodeName)
-			playerZoneEvent:FireClient(player, { gamemodeName = gamemodeName })
-			checkAndMaybeCountdown(gamemodeName)
-		end
+		joinQueue(player, gamemodeName)
 	end)
 
 	-- TouchEnded + vérification heartbeat (TouchEnded peut être unreliable)
 	part.TouchEnded:Connect(function(hit)
 		local player = Players:GetPlayerFromCharacter(hit.Parent)
 		if not player or playerZone[player] ~= gamemodeName then return end
+		if queuedViaButton[player] then return end
 		task.delay(0.3, function()
 			if not player.Parent then return end
 			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
@@ -272,12 +271,36 @@ end
 
 removeFromQueues = function(player: Player)
 	local current = playerZone[player]
-	playerZone[player] = nil
+	playerZone[player]       = nil
+	queuedViaButton[player]  = nil
 	if current and queues[current] then
 		queues[current].players[player] = nil
 		updateBillboard(current)
 	end
 	playerZoneEvent:FireClient(player, { gamemodeName = nil })
+end
+
+-- Fait rejoindre `player` à la file de `gamemodeName` (venant d'une zone
+-- physique OU du bouton "Jouer" côté client). Idempotent si déjà dedans.
+-- `viaButton` = true désactive la vérification de position (le joueur n'a
+-- pas besoin de marcher physiquement sur la zone).
+joinQueue = function(player: Player, gamemodeName: string, viaButton: boolean?)
+	if not queues[gamemodeName] then return end
+	if playerZone[player] == gamemodeName then
+		queuedViaButton[player] = viaButton or queuedViaButton[player] or false
+		return
+	end
+
+	if playerZone[player] then
+		removeFromQueues(player)
+	end
+
+	playerZone[player]                   = gamemodeName
+	queuedViaButton[player]              = viaButton or false
+	queues[gamemodeName].players[player] = true
+	updateBillboard(gamemodeName)
+	playerZoneEvent:FireClient(player, { gamemodeName = gamemodeName })
+	checkAndMaybeCountdown(gamemodeName)
 end
 
 checkAndMaybeCountdown = function(gamemodeName: string)
@@ -339,7 +362,8 @@ startRound = function(gamemodeName: string)
 
 	-- Vide la queue et met à jour les zones de ces joueurs
 	for p in q.players do
-		playerZone[p] = nil
+		playerZone[p]      = nil
+		queuedViaButton[p] = nil
 		playerZoneEvent:FireClient(p, { gamemodeName = nil })
 	end
 	q.players = {}
@@ -397,6 +421,7 @@ task.spawn(function()
 				removeFromQueues(player)
 				continue
 			end
+			if queuedViaButton[player] then continue end
 			local part = zoneParts[gamemodeName]
 			if not part then continue end
 			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
@@ -482,6 +507,30 @@ function LobbyService.Start(gamemodes)
 	end)
 
 	Players.PlayerRemoving:Connect(removeFromQueues)
+
+	-- Bouton "Jouer" client : requête de rejoindre une file par nom de gamemode
+	requestJoinEvent.OnServerEvent:Connect(function(player, gamemodeName)
+		if type(gamemodeName) ~= "string" then return end
+		joinQueue(player, gamemodeName, true)
+	end)
+
+	-- Annulation de la recherche depuis le client
+	requestLeaveEvent.OnServerEvent:Connect(function(player)
+		removeFromQueues(player)
+	end)
+
+	-- Fournit la liste des gamemodes (nom, description, min joueurs) pour le menu client
+	getGamemodesFunc.OnServerInvoke = function(_player)
+		local list = {}
+		for _, gm in gamemodes do
+			table.insert(list, {
+				name        = gm.Name,
+				description = gm.Description,
+				minPlayers  = gm.MinPlayers,
+			})
+		end
+		return list
+	end
 
 	banner("🏠 Lobby ouvert — montez sur une zone pour jouer !")
 	print("[LobbyService] démarré ✅")

@@ -72,6 +72,9 @@ Phase 2 complète ✅. Cosmétiques restants. Lobby hub implémenté (hors roadm
       - `RoundManager.server.luau` : réduit à ~15 lignes (crée GameStatus + démarre LobbyService)
       - Convention Studio : `ServerStorage.Venues.Lobby` → `SpawnPoints/` + Parts avec `Attribute("Gamemode")`
       - Fallback procédural : plateformes colorées aux 4 points cardinaux si pas de map lobby
+- [x] **Bouton "JOUER" bas-centre** — recherche de serveur sans marcher sur une zone
+      - `LobbyService.luau` : `joinQueue()` extrait (réutilisé par zones + remote), RemoteEvents `RequestJoinQueue`/`RequestLeaveQueue`, RemoteFunction `GetGamemodes`
+      - `PlayButton.client.luau` : bouton bas-centre → menu de sélection de gamemode → file d'attente, overlay "Recherche…" + annulation, se synchronise avec `PlayerZone` (masqué si déjà en file/zone)
 
 ---
 

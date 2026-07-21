@@ -161,6 +161,7 @@ Boucle de jeu minimale **fonctionnelle et testée** :
 - `Gamemodes/Infector.luau` — thème **« Le Clown de nuit »** (voir § 1.bis) : clown(s) de départ au hasard, arme batte via `InfectorEvents.Swing` (hitbox cône `meleeRange`/`MELEE_CONE_DOT`), **knockback vélocité façon Smash Bros** (`AssemblyLinearVelocity` + `Humanoid.PlatformStand`), ambiance sombre via `Lighting` (restaurée au `Stop()`), highlight clown, conditions de victoire survivants/clowns + timeout, `RoundDuration = 300` (5 min).
 - `InfectorInput.client.luau` — clic gauche PC + bouton mobile 🏏, actif seulement pour les joueurs devenus clowns (`SetActive` individuel).
 - `StatusHud.client.luau` — bandeau d'annonces central + timer coin haut-droit.
+- `PlayButton.client.luau` — bouton "JOUER" bas-centre → menu de sélection de gamemode → rejoint la file d'attente (recherche de serveur) via `LobbyService` sans marcher sur une zone.
 - `shared/Gamemodes/Types.luau` — contrat des gamemodes.
 - Config actuelle : `MIN_PLAYERS = 2`, intermission 10 s, round Infector 300 s (5 min).
 
