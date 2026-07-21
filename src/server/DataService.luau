@@ -9,6 +9,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local PlayerConfig = require(
 	ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("PlayerConfig")
 )
+local LeaderboardService  = require(script.Parent.LeaderboardService)
+local AchievementService  = require(script.Parent.AchievementService)
 
 -- ===== Config =====
 
@@ -22,6 +24,10 @@ local TEMPLATE = {
 	equipped       = {},
 	achievements   = {},
 	bestTimes      = {},
+	stats = {
+		gamesPlayed = 0,
+		gamesWon    = 0,
+	},
 }
 
 -- ===== Init DataStore =====
@@ -162,6 +168,8 @@ function DataService.AddGoofyPoints(player, amount)
 	data.level      = newLevel
 
 	syncLeaderstats(player, data)
+	LeaderboardService.UpdateScore(player.UserId, data.goofyPoints)
+	AchievementService.Check(player, data, "gp_change")
 
 	DataUpdated:FireClient(player, {
 		goofyPoints    = data.goofyPoints,
@@ -176,6 +184,7 @@ local function onPlayerAdded(player)
 	local data = loadData(player.UserId)
 	profiles[player.UserId] = data
 	syncLeaderstats(player, data)
+	LeaderboardService.UpdateScore(player.UserId, data.goofyPoints)
 	DataUpdated:FireClient(player, {
 		goofyPoints = data.goofyPoints,
 		level       = data.level,

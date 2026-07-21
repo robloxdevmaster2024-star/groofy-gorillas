@@ -24,9 +24,6 @@ wally-package-types.lua
 # mais on ignore le reste. Décommente la ligne suivante pour tout ignorer :
 # .vscode/
 
-# ── Rokit source (dossier téléchargé par erreur, pas lié au projet) ──
-/rokit-main/
-
 # ── OS ──
 .DS_Store
 Thumbs.db
@@ -37,3 +34,7 @@ desktop.ini
 .env
 .env.local
 node_modules/
+
+# ── Outils annexes (pas le jeu) ──
+/rokit-main/       # source vendorée de l'outil Rokit lui-même
+/graphify-out/     # cache/artefacts générés par l'analyse graphify

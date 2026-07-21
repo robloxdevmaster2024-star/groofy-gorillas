@@ -8,8 +8,8 @@
 
 ## Statut global
 
-**Phase actuelle : Phase 2 — Profondeur de jeu**
-Phase 1 complète ✅. Prochain maillon : chargement de maps (venues) + 2ᵉ gamemode Dodgeball.
+**Phase actuelle : Phase 3 — Méta & rétention (en cours)**
+Phase 2 complète ✅. Cosmétiques restants. Lobby hub implémenté (hors roadmap officielle, ajouté en session).
 
 ---
 
@@ -47,19 +47,68 @@ Phase 1 complète ✅. Prochain maillon : chargement de maps (venues) + 2ᵉ gam
       - `MapManager.luau` : LoadRandom, Unload, fallback grille circulaire si pas de maps
       - Joueurs téléportés aux spawn points avant `Start()`
       - Convention map : Model avec dossier `SpawnPoints/` contenant des BaseParts
-- [ ] **2ᵉ gamemode : Dodgeball** (valide la solidité du framework)
-- [ ] **Système de settings / édition des gamemodes** : overrides des `DefaultSettings` (lumières off, arme imposée…) + UI host
+- [x] **2ᵉ gamemode : Dodgeball** (valide la solidité du framework)
+      - balles serveur (CanCollide = true, Touched avec délai 0.2s anti-self-hit)
+      - direction = LookVector caméra envoyé par le client (RemoteEvent)
+      - validation cooldown + direction côté serveur (anti-cheat)
+      - joueurs éliminés : Highlight gris + WalkSpeed 0
+      - bouton mobile dédié (évite conflit swipe caméra)
+      - RemoteEvents créés au chargement du module (WaitForChild client fiable)
+- [x] **Système de settings / édition des gamemodes** : overrides des `DefaultSettings` + UI host
+      - `GameSettings.luau` : stockage overrides par gamemode, host = 1er joueur connecté, RemoteEvents
+      - `SettingsMenu.client.luau` : panneau haut-droit pendant l'intermission (host = boutons +/−, autres = lecture seule)
+      - `SettingsSchema` data-driven ajouté dans Infector et Dodgeball
+      - RoundManager : sélection du mode AVANT l'intermission (le mode est annoncé dès le début du décompte)
 - [ ] (Optionnel) 3ᵉ gamemode pour stresser le framework
 
 ---
 
-## Phase 3 — Méta & rétention  `[ ]`
+## Lobby Hub (ajout hors phases)  `[x]`
 
-- [ ] **Leaderboards** (OrderedDataStore) : Goofy Points global, etc.
-      - ⚠️ Time Trial = « plus bas gagne » → stocker en négatif / inverser à l'affichage
+- [x] **Système de lobby + zones** — refonte majeure de l'orchestration
+      - `LobbyService.luau` : lobby map (Studio) ou zones procédurales colorées, queues par gamemode, countdown 15s, un round à la fois
+      - `RoundRunner.luau` : logique d'exécution d'un round extraite de RoundManager (callable, yields)
+      - `LobbyHud.client.luau` : panneau bas-centre animé (slide-in), barre de progression, statut countdown
+      - `RoundManager.server.luau` : réduit à ~15 lignes (crée GameStatus + démarre LobbyService)
+      - Convention Studio : `ServerStorage.Venues.Lobby` → `SpawnPoints/` + Parts avec `Attribute("Gamemode")`
+      - Fallback procédural : plateformes colorées aux 4 points cardinaux si pas de map lobby
+
+---
+
+## Infector — Reskin « Le Clown de nuit »  `[x]`
+
+> Thème officiel retenu pour Infector, voir `CLAUDE.md` § 1.bis.
+
+- [x] Remplacer la contamination par proximité par une **arme batte de baseball** (hitbox serveur, swing via cône de portée `meleeRange`/`MELEE_CONE_DOT`)
+      - `InfectorEvents.Swing` (client → serveur, LookVector caméra) + `InfectorEvents.SetActive` (serveur → client, active/désactive le bouton de frappe)
+      - `InfectorInput.client.luau` : clic gauche PC + bouton mobile dédié 🏏
+- [x] **Knockback basé sur la vélocité d'impact** façon Smash Bros
+      - `applyKnockback()` : `AssemblyLinearVelocity` (horizontal + vertical) + `Humanoid.PlatformStand` pendant `knockbackStunDuration`
+- [x] Passer `RoundDuration` de 90 à **300** (5 min)
+- [x] Reskin visuel minimal : highlight clown (rose/rouge), banners re-thémés 🤡, ambiance sombre via `Lighting` (ClockTime minuit, ambient sombre, fog) restaurée au `Stop()`
+- [x] Win conditions (`CheckWin`/`ResolveTimeout`) inchangées et cohérentes (rôles clown/enfant = infecté/survivant)
+- [ ] *(non fait)* Ambiance sonore (SFX) et modèle 3D de batte/clown — nécessite assets, hors scope code
+- [ ] *(non fait)* Vérifier en Studio (2 clients) que le knockback ne propulse pas les joueurs hors des maps existantes
+
+---
+
+## Phase 3 — Méta & rétention  `[~]`
+
+- [x] **Leaderboards** (OrderedDataStore) : Goofy Points global
+      - `LeaderboardService.luau` : OrderedDataStore "GoofyPoints_Global_v1", UpdateScore + Refresh
+      - `LeaderboardGui.client.luau` : overlay centré (Tab + bouton 🏆 haut-gauche), top 10, joueur local mis en valeur
+      - DataService : UpdateScore au chargement + après AddGoofyPoints
+      - RoundManager : Refresh après attribution des GP de fin de round
+      - ⚠️ Time Trial = « plus bas gagne » → stocker en négatif / inverser à l'affichage (Phase 4)
 - [ ] **Cosmétiques** : modèle layered clothing vs accessoires classiques *(décision en attente)*
       - shop + équipement **serveur** (anti-triche) + aperçu client
-- [ ] **Achievements + easter eggs** (flags persistés)
+- [x] **Achievements + easter eggs** (flags persistés)
+      - `AchievementsConfig.luau` (shared) : 14 succès data-driven (progression, gameplay, easter egg)
+      - `AchievementService.luau` : conditions par trigger ("gp_change", "round_win", "round_played")
+      - `AchievementToast.client.luau` : pop-up animée bas-droit, pile max 3, slide + fade-out
+      - `Infector.GetWinnerRoles()` : distingue infecteur vs survivant pour achievements ciblés
+      - DataService : champ `stats { gamesPlayed, gamesWon }` ajouté au template + Check après GP
+      - RoundManager : incrémente stats, Check "round_win" (avec rôle) et "round_played" après chaque round
 
 ---
 

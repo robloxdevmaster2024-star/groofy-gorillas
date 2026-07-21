@@ -14,4 +14,4 @@ Next, open `Goofy_Gorillas.rbxlx` in Roblox Studio and start the Rojo server:
 rojo serve
 ```
 
-For more help, check out [the Rojo documentation](https://rojo.space/docs).
+For more help, check out [the Rojo documentation](https://rojo.space/docs).# groofy-gorillas
