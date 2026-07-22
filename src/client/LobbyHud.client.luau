@@ -44,8 +44,8 @@ colorBar.BorderSizePixel = 0
 Instance.new("UICorner", colorBar).CornerRadius = UDim.new(0, 3)
 
 local ZONE_COLORS = {
-	Infector  = Color3.fromRGB(220, 50,  50),
-	Dodgeball = Color3.fromRGB(50,  100, 220),
+	["Clown Survival"] = Color3.fromRGB(220, 50,  50),
+	Dodgeball          = Color3.fromRGB(50,  100, 220),
 }
 
 -- Nom de la zone

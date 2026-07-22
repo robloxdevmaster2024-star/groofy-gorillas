@@ -9,8 +9,8 @@
 ## 1. Concept directeur
 
 **Contraste jour/nuit.** Le hub est l'aire de jeu **de jour** : colorée, insouciante, presque naïve.
-Quand un round **Infector** démarre, le code bascule automatiquement l'éclairage vers l'ambiance
-nocturne oppressante (`Infector.luau` → `applyDarkAtmosphere()`), déjà scriptée. Le hub ne doit donc
+Quand un round **Clown Survival** démarre, le code bascule automatiquement l'éclairage vers l'ambiance
+nocturne oppressante (`ClownSurvival.luau` → `applyDarkAtmosphere()`), déjà scriptée. Le hub ne doit donc
 **pas** être sombre par défaut — c'est la bascule qui crée l'effet.
 
 Corollaire pour le design : chaque structure doit être lisible et reconnaissable **dans les deux
@@ -30,13 +30,13 @@ ServerStorage
         ├── SpawnPoints/                (Folder)
         │   └── ... BaseParts           (positions de spawn ; le code ajoute +5 en Y)
         └── (n'importe où dans les descendants)
-            └── BasePart avec Attribute "Gamemode" = "Infector" | "Dodgeball"
+            └── BasePart avec Attribute "Gamemode" = "Clown Survival" | "Dodgeball"
 ```
 
 - **`SpawnPoints/`** : un dossier contenant des BaseParts (peuvent être invisibles/`Transparency = 1`,
   juste utilisées comme repères de position). Mets-en 6 à 10, réparties sur la place centrale.
 - **Zones de gamemode** : n'importe quel BasePart dans le modèle `Lobby`, tant qu'il a l'**Attribute**
-  `Gamemode` réglé sur `"Infector"` ou `"Dodgeball"` (Attributes = onglet dans les Properties de
+  `Gamemode` réglé sur `"Clown Survival"` ou `"Dodgeball"` (Attributes = onglet dans les Properties de
   Studio, pas un nom d'instance). Cette part sert de **volume de déclenchement** (`Touched`) — elle
   doit englober la zone au sol où le joueur doit marcher pour rejoindre la file. Le code lui ajoute
   automatiquement un `BillboardGui` par-dessus (compteur de joueurs, statut, countdown) : **ne mets
@@ -73,7 +73,7 @@ ZONE INFECTOR  ------- PLACE CENTRALE -------  STAND COSMÉTIQUES
 
 - **Place centrale** (rayon ~25 studs) : point de spawn, structure centrale emblématique (carrousel
   ou cage à écureuil), c'est le cœur social du hub.
-- **Zone Infector** (côté -X) : littéralement le coin toboggans/balançoires — cohérent avec le thème,
+- **Zone Clown Survival** (côté -X) : littéralement le coin toboggans/balançoires — cohérent avec le thème,
   et ça prépare visuellement le joueur à l'endroit qui va s'assombrir.
 - **Zone Dodgeball** (côté +X) : terrain clôturé façon cour de récré (grillage bas, marquages au sol).
 - **Stand + totem + mur** (au fond, +Z ou -X selon place dispo) : purement décoratifs pour l'instant
@@ -92,7 +92,7 @@ percutent en se déplaçant entre les files.
 
 | Zone | RGB | Hex | Usage |
 |---|---|---|---|
-| Infector | `220, 50, 50` | `#DC3232` | Accents structure, marquages sol |
+| Clown Survival | `220, 50, 50` | `#DC3232` | Accents structure, marquages sol |
 | Dodgeball | `50, 100, 220` | `#3264DC` | Accents structure, marquages sol |
 | Défaut (autres zones futures) | `120, 90, 200` | `#785AC8` | Réservé |
 
@@ -118,7 +118,7 @@ franches**, typiques d'un playground :
 
 ### 4.4 Palette "Nuit" (référence — déjà scriptée, ne pas construire manuellement)
 
-Ces valeurs sont appliquées automatiquement par `Infector.luau` au démarrage d'un round et restaurées
+Ces valeurs sont appliquées automatiquement par `ClownSurvival.luau` au démarrage d'un round et restaurées
 à la fin — **information pour toi**, pour prévisualiser dans Studio comment tes structures rendront :
 
 | Propriété Lighting | Valeur |
@@ -132,7 +132,7 @@ Ces valeurs sont appliquées automatiquement par `Infector.luau` au démarrage d
 
 ➡️ **Conséquence concrète** : au-delà de ~90 studs, tout disparaît dans le fog. Les structures
 importantes (zones de gamemode, repères de navigation) doivent être **à moins de 90 studs de tout
-point où un joueur peut se trouver**, sinon elles deviennent invisibles pendant Infector.
+point où un joueur peut se trouver**, sinon elles deviennent invisibles pendant Clown Survival.
 
 ---
 
@@ -160,9 +160,9 @@ rose clown (§4.2) pour les accents du carrousel/stand.
   légèrement "too wide grin" (sourire trop large) sont un bon easter egg discret du thème clown, sans
   être too on-the-nose pour un hub censé rester accueillant de jour.
 
-### 6.2 Zone Infector — coin toboggans/balançoires
+### 6.2 Zone Clown Survival — coin toboggans/balançoires
 - **Volume trigger** : couvrir toute la zone où les joueurs doivent marcher pour rejoindre la file
-  (~20x20 studs), `Attribute("Gamemode") = "Infector"`.
+  (~20x20 studs), `Attribute("Gamemode") = "Clown Survival"`.
 - **Décor autour** : toboggan, structure à balançoires, bac à sable.
 - **Couleurs** : rouge zone (§4.1) en accent (poteaux, toboggan), reste en palette jour (§4.3).
 - **CollisionFidelity** : `Box` ou `Hull` sur toutes les parts complexes (perf mobile, cf. §8).
@@ -232,7 +232,7 @@ sera un ajout de code séparé, pas un sujet de design — dis-le-moi quand tu y
 ## 9. Checklist avant de considérer le hub "prêt"
 
 - [ ] `ServerStorage.Venues.Lobby` existe avec `SpawnPoints/` (6-10 points)
-- [ ] Zone Infector : BasePart avec `Attribute("Gamemode") = "Infector"`, volume couvrant la zone de
+- [ ] Zone Clown Survival : BasePart avec `Attribute("Gamemode") = "Clown Survival"`, volume couvrant la zone de
       marche
 - [ ] Zone Dodgeball : idem avec `"Dodgeball"`
 - [ ] Toutes les structures importantes sont à moins de 90 studs de tout point accessible (contrainte

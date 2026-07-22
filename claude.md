@@ -14,20 +14,20 @@
 
 ## 1. Le jeu
 
-**Goofy Gorillas** est un *party-game / hub à minijeux* sur Roblox, inspiré du jeu du même nom. Concept : un lobby central depuis lequel les joueurs enchaînent des **gamemodes** d'action (Infector, Dodgeball brawl…) sur différentes **venues** (maps). On gagne des **Goofy Points** qui font monter de niveau, on débloque des **cosmétiques**, et entre les rounds on peut jouer à des **activités annexes** (Time Trial, Four in a Row, Gravity arcade). Présence prévue de **voice chat positionnel** et de **combat physique** (knockback basé sur la vélocité — « don't hit each other too hard »).
+**Goofy Gorillas** est un *party-game / hub à minijeux* sur Roblox, inspiré du jeu du même nom. Concept : un lobby central depuis lequel les joueurs enchaînent des **gamemodes** d'action (Clown Survival, Dodgeball brawl…) sur différentes **venues** (maps). On gagne des **Goofy Points** qui font monter de niveau, on débloque des **cosmétiques**, et entre les rounds on peut jouer à des **activités annexes** (Time Trial, Four in a Row, Gravity arcade). Présence prévue de **voice chat positionnel** et de **combat physique** (knockback basé sur la vélocité — « don't hit each other too hard »).
 
 Cible : **PC + mobile**, avatars **R15**, vue FPS/TPS standard. Toute mécanique doit fonctionner identiquement sur PC et mobile (éviter les dépendances aux inputs spécifiques ; privilégier la détection serveur).
 
-### 1.bis Thème du gamemode Infector — « Le Clown de nuit »
+### 1.bis Thème du gamemode Clown Survival — « Le Clown de nuit »
 
-Habillage narratif retenu pour **Infector** (à implémenter, voir `docs/ROADMAP.md` Phase 2/5) :
+Habillage narratif retenu pour **Clown Survival** (implémenté, voir `docs/ROADMAP.md`) :
 
 - **Cadre** : une aire de jeu pour enfants, la nuit — ambiance sombre, stressante, oppressante (éclairage bas, brouillard léger, sons ambiants inquiétants).
 - **Rôle infecteur** : un **clown**, gardien de nuit de l'aire de jeu, armé d'une **batte de baseball**.
 - **Rôle survivants** : les « enfants » (joueurs non infectés).
 - **Contamination** : le clown doit frapper les enfants à la batte. Un coup réussi propulse le joueur touché avec un **knockback fort basé sur la vélocité d'impact**, façon *Super Smash Bros* (envol spectaculaire, pas juste un tag silencieux). Le joueur touché devient à son tour un clown.
 - **Durée de session** : **5 minutes (300s)** — le clown doit avoir « chassé » (infecté) tous les enfants avant la fin du temps.
-- **Écart avec l'implémentation actuelle** (`server/Gamemodes/Infector.luau`) : contamination par simple proximité (pas d'arme), pas de knockback, `RoundDuration = 90`, pas de direction artistique définie. Ces écarts sont trackés dans la roadmap.
+- Implémentation : `server/Gamemodes/ClownSurvival.luau`.
 
 ---
 
@@ -63,7 +63,7 @@ rojo --version
 1. `rojo serve` dans le terminal VS Code (le laisser tourner).
 2. Dans Studio : onglet **Plugins → Rojo → Connect**.
 3. Coder dans VS Code → la synchro est live.
-4. Tester via **Test → Clients and Servers** (Infector nécessite 2 joueurs).
+4. Tester via **Test → Clients and Servers** (Clown Survival nécessite 2 joueurs).
 5. `print(...)` visibles dans **View → Output**.
 
 ---
@@ -83,7 +83,7 @@ src/
 ├── server/
 │   ├── RoundManager.server.luau      # machine à états des parties
 │   └── Gamemodes/
-│       └── Infector.luau             # ModuleScript (gamemode)
+│       └── ClownSurvival.luau        # ModuleScript (gamemode)
 ├── client/
 │   └── StatusHud.client.luau         # HUD : bandeau d'annonces + timer
 └── shared/
@@ -158,12 +158,13 @@ Le HUD client (`StatusHud.client.luau`) écoute et affiche.
 
 Boucle de jeu minimale **fonctionnelle et testée** :
 - `RoundManager.server.luau` — machine à états complète, rotation auto, création du RemoteEvent GameStatus.
-- `Gamemodes/Infector.luau` — thème **« Le Clown de nuit »** (voir § 1.bis) : clown(s) de départ au hasard, arme batte via `InfectorEvents.Swing` (hitbox cône `meleeRange`/`MELEE_CONE_DOT`), **knockback vélocité façon Smash Bros** (`AssemblyLinearVelocity` + `Humanoid.PlatformStand`), ambiance sombre via `Lighting` (restaurée au `Stop()`), highlight clown, conditions de victoire survivants/clowns + timeout, `RoundDuration = 300` (5 min).
-- `InfectorInput.client.luau` — clic gauche PC + bouton mobile 🏏, actif seulement pour les joueurs devenus clowns (`SetActive` individuel).
+- `Gamemodes/ClownSurvival.luau` — thème **« Le Clown de nuit »** (voir § 1.bis) : clown(s) de départ au hasard, arme batte physique (Motor6D) via `ClownSurvivalEvents.Swing` (hitbox cône `meleeRange`/`MELEE_CONE_DOT`), animation de swing (Heartbeat), **knockback + ragdoll R15 façon Smash Bros** (BallSocketConstraint + `AssemblyLinearVelocity`), bouton "TAUNT" pour les survivants (`ClownSurvivalEvents.Taunt`), ambiance sombre via `Lighting` (restaurée au `Stop()`), highlight clown, conditions de victoire survivants/clowns + timeout, `RoundDuration = 300` (5 min).
+- `ClownSurvivalInput.client.luau` — clic gauche PC + bouton mobile 🏏, actif seulement pour les joueurs devenus clowns (`SetActive` individuel).
+- `ClownSurvivalTaunt.client.luau` — bouton taunt (touche F sur PC, tap sur mobile) réservé aux survivants.
 - `StatusHud.client.luau` — bandeau d'annonces central + timer coin haut-droit.
 - `PlayButton.client.luau` — bouton "JOUER" bas-centre → menu de sélection de gamemode → rejoint la file d'attente (recherche de serveur) via `LobbyService` sans marcher sur une zone.
 - `shared/Gamemodes/Types.luau` — contrat des gamemodes.
-- Config actuelle : `MIN_PLAYERS = 2`, intermission 10 s, round Infector 300 s (5 min).
+- Config actuelle : `MIN_PLAYERS = 2`, intermission 10 s, round Clown Survival 300 s (5 min).
 
 ---
 

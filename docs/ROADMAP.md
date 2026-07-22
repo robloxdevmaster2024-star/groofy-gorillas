@@ -26,7 +26,7 @@ Phase 2 complète ✅. Cosmétiques restants. Lobby hub implémenté (hors roadm
 
 - [x] Contrat des gamemodes — `shared/Gamemodes/Types.luau`
 - [x] Round Manager (machine à états, rotation auto) — `server/RoundManager.server.luau`
-- [x] Gamemode **Infector** complet — `server/Gamemodes/Infector.luau`
+- [x] Gamemode **Clown Survival** complet — `server/Gamemodes/ClownSurvival.luau`
 - [x] HUD de statut (bandeau + timer) — `client/StatusHud.client.luau`
 - [x] **DataService (DataStoreService)** — persistance joueur
       - champs : `goofyPoints`, `level`, `ownedCosmetics`, `equipped`, `achievements`, `bestTimes`
@@ -57,7 +57,7 @@ Phase 2 complète ✅. Cosmétiques restants. Lobby hub implémenté (hors roadm
 - [x] **Système de settings / édition des gamemodes** : overrides des `DefaultSettings` + UI host
       - `GameSettings.luau` : stockage overrides par gamemode, host = 1er joueur connecté, RemoteEvents
       - `SettingsMenu.client.luau` : panneau haut-droit pendant l'intermission (host = boutons +/−, autres = lecture seule)
-      - `SettingsSchema` data-driven ajouté dans Infector et Dodgeball
+      - `SettingsSchema` data-driven ajouté dans Clown Survival et Dodgeball
       - RoundManager : sélection du mode AVANT l'intermission (le mode est annoncé dès le début du décompte)
 - [ ] (Optionnel) 3ᵉ gamemode pour stresser le framework
 
@@ -75,23 +75,30 @@ Phase 2 complète ✅. Cosmétiques restants. Lobby hub implémenté (hors roadm
 - [x] **Bouton "JOUER" bas-centre** — recherche de serveur sans marcher sur une zone
       - `LobbyService.luau` : `joinQueue()` extrait (réutilisé par zones + remote), RemoteEvents `RequestJoinQueue`/`RequestLeaveQueue`, RemoteFunction `GetGamemodes`
       - `PlayButton.client.luau` : bouton bas-centre → menu de sélection de gamemode → file d'attente, overlay "Recherche…" + annulation, se synchronise avec `PlayerZone` (masqué si déjà en file/zone)
+- [x] **Fix : bouton "JOUER" caché/inactif pendant une partie en cours**
+      - `PlayerZone` transporte désormais un flag `inRound` (true au lancement du round, false au retour au lobby)
+      - `PlayButton.client.luau` : le bouton reste invisible + inactif tant que `inRound = true` (empêche de relancer une partie pendant qu'on joue déjà)
+      - `LobbyService.luau` : garde serveur `playersInRound` — `joinQueue()` ignore toute requête d'un joueur déjà en partie (anti-triche)
 
 ---
 
-## Infector — Reskin « Le Clown de nuit »  `[x]`
+## Clown Survival — Reskin « Le Clown de nuit » (ex-"Infector")  `[x]`
 
-> Thème officiel retenu pour Infector, voir `CLAUDE.md` § 1.bis.
+> Thème officiel retenu pour Clown Survival, voir `CLAUDE.md` § 1.bis.
 
 - [x] Remplacer la contamination par proximité par une **arme batte de baseball** (hitbox serveur, swing via cône de portée `meleeRange`/`MELEE_CONE_DOT`)
-      - `InfectorEvents.Swing` (client → serveur, LookVector caméra) + `InfectorEvents.SetActive` (serveur → client, active/désactive le bouton de frappe)
-      - `InfectorInput.client.luau` : clic gauche PC + bouton mobile dédié 🏏
-- [x] **Knockback basé sur la vélocité d'impact** façon Smash Bros
-      - `applyKnockback()` : `AssemblyLinearVelocity` (horizontal + vertical) + `Humanoid.PlatformStand` pendant `knockbackStunDuration`
+      - `ClownSurvivalEvents.Swing` (client → serveur, LookVector caméra) + `ClownSurvivalEvents.SetActive` (serveur → client, active/désactive le bouton de frappe)
+      - `ClownSurvivalInput.client.luau` : clic gauche PC + bouton mobile dédié 🏏
+- [x] **Batte physique + animation de swing** : `Motor6D` soudé à la main (R15/R6), animation Heartbeat aller-retour vers la pose de frappe
+- [x] **Knockback + ragdoll R15** façon Smash Bros
+      - `applyKnockback()` → `ragdollCharacter()` : chaque `Motor6D` détaché (`Part0 = nil`) et remplacé par une `BallSocketConstraint` libre, vélocité d'impact + rotation aléatoire appliquées à chaque membre, restauré après `knockbackStunDuration`
+- [x] **Bouton taunt** (réservé aux survivants) : touche F (PC) / tap (mobile), son de rire, cooldown anti-spam — `ClownSurvivalEvents.Taunt`/`TauntAvailable`
 - [x] Passer `RoundDuration` de 90 à **300** (5 min)
 - [x] Reskin visuel minimal : highlight clown (rose/rouge), banners re-thémés 🤡, ambiance sombre via `Lighting` (ClockTime minuit, ambient sombre, fog) restaurée au `Stop()`
 - [x] Win conditions (`CheckWin`/`ResolveTimeout`) inchangées et cohérentes (rôles clown/enfant = infecté/survivant)
-- [ ] *(non fait)* Ambiance sonore (SFX) et modèle 3D de batte/clown — nécessite assets, hors scope code
-- [ ] *(non fait)* Vérifier en Studio (2 clients) que le knockback ne propulse pas les joueurs hors des maps existantes
+- [x] Renommage complet **Infector → Clown Survival** (fichiers, module, events, achievements, docs)
+- [ ] *(non fait)* Ambiance sonore (SFX du rire du bouton taunt à remplacer par un vrai asset) et modèle 3D de batte/clown — nécessite assets, hors scope code
+- [ ] *(non fait)* Vérifier en Studio (2 clients) que le knockback/ragdoll ne propulse pas les joueurs hors des maps existantes
 
 ---
 
@@ -109,7 +116,7 @@ Phase 2 complète ✅. Cosmétiques restants. Lobby hub implémenté (hors roadm
       - `AchievementsConfig.luau` (shared) : 14 succès data-driven (progression, gameplay, easter egg)
       - `AchievementService.luau` : conditions par trigger ("gp_change", "round_win", "round_played")
       - `AchievementToast.client.luau` : pop-up animée bas-droit, pile max 3, slide + fade-out
-      - `Infector.GetWinnerRoles()` : distingue infecteur vs survivant pour achievements ciblés
+      - `ClownSurvival.GetWinnerRoles()` : distingue clown vs survivant pour achievements ciblés
       - DataService : champ `stats { gamesPlayed, gamesWon }` ajouté au template + Check après GP
       - RoundManager : incrémente stats, Check "round_win" (avec rôle) et "round_played" après chaque round
 

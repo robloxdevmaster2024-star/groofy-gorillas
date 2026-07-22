@@ -4,7 +4,7 @@
 -- Convention map Studio :
 --   ServerStorage.Venues.Lobby  →  Model avec :
 --     SpawnPoints/   → BaseParts (positions de spawn lobby)
---     Zones/         → BaseParts avec Attribute("Gamemode") = "Infector" | "Dodgeball" | ...
+--     Zones/         → BaseParts avec Attribute("Gamemode") = "Clown Survival" | "Dodgeball" | ...
 --
 -- Si aucune map "Lobby" n'existe → zones procédurales colorées générées automatiquement.
 
@@ -40,8 +40,8 @@ local COUNTDOWN      = 15   -- secondes avant le lancement
 local RETURN_DELAY   = 3    -- secondes après round avant retour lobby
 
 local ZONE_COLORS = {
-	Infector  = Color3.fromRGB(220, 50,  50),
-	Dodgeball = Color3.fromRGB(50,  100, 220),
+	["Clown Survival"] = Color3.fromRGB(220, 50,  50),
+	Dodgeball          = Color3.fromRGB(50,  100, 220),
 }
 local DEFAULT_COLOR = Color3.fromRGB(120, 90, 200)
 
@@ -68,6 +68,9 @@ local playerZone : { [Player]: string? } = {}
 
 -- joueurs ayant rejoint la file via le bouton "Jouer" (pas de position à vérifier)
 local queuedViaButton : { [Player]: boolean } = {}
+
+-- joueurs actuellement en partie (round en cours) : interdit de rejoindre une nouvelle file
+local playersInRound : { [Player]: boolean } = {}
 
 -- ===== Forward declarations (récursion mutuelle) =====
 local checkAndMaybeCountdown
@@ -273,6 +276,7 @@ removeFromQueues = function(player: Player)
 	local current = playerZone[player]
 	playerZone[player]       = nil
 	queuedViaButton[player]  = nil
+	playersInRound[player]   = nil
 	if current and queues[current] then
 		queues[current].players[player] = nil
 		updateBillboard(current)
@@ -286,6 +290,7 @@ end
 -- pas besoin de marcher physiquement sur la zone).
 joinQueue = function(player: Player, gamemodeName: string, viaButton: boolean?)
 	if not queues[gamemodeName] then return end
+	if playersInRound[player] then return end -- déjà en partie : requête ignorée (anti-triche)
 	if playerZone[player] == gamemodeName then
 		queuedViaButton[player] = viaButton or queuedViaButton[player] or false
 		return
@@ -361,10 +366,12 @@ startRound = function(gamemodeName: string)
 	end
 
 	-- Vide la queue et met à jour les zones de ces joueurs
+	-- (inRound = true : le client doit garder le bouton "Jouer" caché jusqu'au retour au lobby)
 	for p in q.players do
 		playerZone[p]      = nil
 		queuedViaButton[p] = nil
-		playerZoneEvent:FireClient(p, { gamemodeName = nil })
+		playersInRound[p]  = true
+		playerZoneEvent:FireClient(p, { gamemodeName = nil, inRound = true })
 	end
 	q.players = {}
 
@@ -374,6 +381,12 @@ startRound = function(gamemodeName: string)
 
 	if #players < minPlayers(gamemodeName) then
 		roundInProgress = false
+		for _, p in players do
+			playersInRound[p] = nil
+			if p.Parent then
+				playerZoneEvent:FireClient(p, { gamemodeName = nil, inRound = false })
+			end
+		end
 		return
 	end
 
@@ -401,6 +414,8 @@ returnToLobby = function(players: { Player })
 
 	for _, p in players do
 		if not p.Parent then continue end
+		playersInRound[p] = nil
+		playerZoneEvent:FireClient(p, { gamemodeName = nil, inRound = false })
 		task.spawn(function()
 			p:LoadCharacter()
 			local char = p.Character or p.CharacterAdded:Wait()

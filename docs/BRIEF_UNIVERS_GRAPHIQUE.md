@@ -41,7 +41,7 @@ qui flirte avec l'inquiétant sur un mode précis, sans jamais devenir glauque o
 6. Progression méta : points ("Goofy Points") → niveaux → cosmétiques à débloquer (système en cours
    de conception) ; succès/achievements avec notifications ; classement global affiché en overlay.
 
-### 2.2 Gamemode phare — Infector, dit **« Le Clown de nuit »**
+### 2.2 Gamemode phare — Clown Survival, dit **« Le Clown de nuit »**
 
 C'est le mode le plus caractéristique du jeu, celui qui porte l'identité visuelle forte.
 
@@ -71,7 +71,7 @@ simple recul) puis se transforme lui-même en clown et rejoint la chasse.
 ### 2.3 Gamemode secondaire — Dodgeball
 
 Un brawl de ballons classique : les joueurs se lancent des balles, dernier debout gagne. Ce mode
-**ne partage pas** l'ambiance horrifique d'Infector — il reste dans le ton "fun/goofy" par défaut du
+**ne partage pas** l'ambiance horrifique de Clown Survival — il reste dans le ton "fun/goofy" par défaut du
 hub, en franc contraste. Utile pour rappeler que le jeu n'est pas *que* de l'horreur.
 
 ### 2.4 Méta-progression (contexte, moins prioritaire pour le décor)
@@ -86,16 +86,16 @@ Points de jeu cumulables, courbe de niveaux, classement global visible en jeu, s
 - **Registre visuel** : cartoon/jouet, pas réaliste. Formes simples, couleurs saturées, silhouettes
   lisibles de loin — cohérent avec l'esthétique low-poly typique de Roblox et avec le ton "party-game
   familial" du nom Goofy Gorillas.
-- **Contraste jour/nuit comme moteur central** : le hub (et la map Infector avant le round) est
-  lumineux, coloré, presque naïf. Dès qu'un round Infector démarre, l'éclairage devient nocturne et
+- **Contraste jour/nuit comme moteur central** : le hub (et la map Clown Survival avant le round) est
+  lumineux, coloré, presque naïf. Dès qu'un round Clown Survival démarre, l'éclairage devient nocturne et
   angoissant. C'est cette **bascule** qui doit porter l'effet horrifique, pas un décor qui serait
   sombre en permanence.
 - **Couleurs d'identité déjà figées** (utilisées ailleurs dans l'UI du jeu, à respecter pour la
   cohérence) :
-  - Rouge vif `#DC3232` associé au gamemode Infector.
+  - Rouge vif `#DC3232` associé au gamemode Clown Survival.
   - Bleu vif `#3264DC` associé au gamemode Dodgeball.
   - Rose/magenta vif `#E61E82` = couleur signature du "clown" (utilisée sur les joueurs transformés).
-- **Contrainte du brouillard nocturne** : pendant un round Infector, le brouillard rend tout ce qui
+- **Contrainte du brouillard nocturne** : pendant un round Clown Survival, le brouillard rend tout ce qui
   dépasse ~90 mètres invisible, et l'ambiance générale est très sombre (proche du noir). Tout élément
   de décor important doit soit être proche du joueur, soit porter des accents lumineux
   auto-éclairés (façon néon) pour rester visible.
@@ -141,7 +141,7 @@ C'est la partie sur laquelle un retour créatif est recherché. Points à tranch
 
 - **Structure centrale du hub** : un élément emblématique et social (ex. carrousel) servant de point
   de repère et de spawn.
-- **Zone du gamemode Infector** : coin toboggans/balançoires/bac à sable — c'est l'endroit qui
+- **Zone du gamemode Clown Survival** : coin toboggans/balançoires/bac à sable — c'est l'endroit qui
   s'assombrit quand le round démarre, donc son design de jour doit "annoncer" discrètement ce basculement.
 - **Zone du gamemode Dodgeball** : terrain clôturé façon cour de récréation/terrain de sport.
 - **Éléments décoratifs secondaires** : un stand (type kiosque/camion de glaces, pour un futur shop

@@ -1,5 +1,5 @@
 --!nonstrict
--- InfectorInput.client.luau — Saisie du coup de batte (Infector / « Le Clown de nuit »).
+-- ClownSurvivalInput.client.luau — Saisie du coup de batte (Clown Survival / « Le Clown de nuit »).
 -- Actif uniquement pour le(s) joueur(s) déjà transformé(s) en clown, via RemoteEvent "SetActive".
 
 local Players           = game:GetService("Players")
@@ -9,8 +9,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
--- Attente des events (créés par Infector.luau au démarrage serveur)
-local eventsFolder  = ReplicatedStorage:WaitForChild("InfectorEvents")
+-- Attente des events (créés par ClownSurvival.luau au démarrage serveur)
+local eventsFolder  = ReplicatedStorage:WaitForChild("ClownSurvivalEvents")
 local swingEvent    = eventsFolder:WaitForChild("Swing")
 local setActiveEvent = eventsFolder:WaitForChild("SetActive")
 
@@ -24,7 +24,7 @@ local swingButton: TextButton?
 
 local function createMobileButton()
 	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "InfectorMobileUI"
+	screenGui.Name = "ClownSurvivalMobileUI"
 	screenGui.ResetOnSpawn = false
 	screenGui.IgnoreGuiInset = true
 	screenGui.Parent = player.PlayerGui

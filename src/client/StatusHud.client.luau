@@ -37,6 +37,7 @@ timer.TextColor3 = Color3.fromRGB(255, 230, 120)
 timer.TextScaled = true
 timer.Font = Enum.Font.FredokaOne
 timer.Text = ""
+timer.Visible = false
 timer.Parent = gui
 Instance.new("UICorner", timer).CornerRadius = UDim.new(0, 10)
 
@@ -56,6 +57,7 @@ GameStatus.OnClientEvent:Connect(function(msg)
 	if type(msg) ~= "table" then return end
 	if msg.kind == "timer" then
 		timer.Text = msg.text
+		timer.Visible = msg.text ~= ""
 	elseif msg.kind == "banner" then
 		showBanner(msg.text)
 	end

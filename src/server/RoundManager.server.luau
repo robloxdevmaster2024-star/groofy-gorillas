@@ -15,7 +15,7 @@ end
 local GamemodesFolder = script.Parent:FindFirstChild("Gamemodes")
 assert(GamemodesFolder, "❌ Dossier 'Gamemodes' introuvable.")
 local AVAILABLE_GAMEMODES = {
-	require(GamemodesFolder.Infector),
+	require(GamemodesFolder.ClownSurvival),
 	require(GamemodesFolder.Dodgeball),
 }
 

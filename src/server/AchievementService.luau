@@ -35,8 +35,8 @@ local CONDITIONS: { [string]: { { id: string, check: (any, any?) -> boolean } } 
 		{ id = "first_win",     check = function(p, d) return true end },
 		{ id = "win_5",         check = function(p, d) return p.stats.gamesWon >= 5  end },
 		{ id = "win_25",        check = function(p, d) return p.stats.gamesWon >= 25 end },
-		{ id = "infector_win",  check = function(p, d) return d.gamemode == "Infector" and d.role == "infector" end },
-		{ id = "survivor",      check = function(p, d) return d.gamemode == "Infector" and d.role == "survivor" end },
+		{ id = "clown_win",     check = function(p, d) return d.gamemode == "Clown Survival" and d.role == "clown" end },
+		{ id = "survivor",      check = function(p, d) return d.gamemode == "Clown Survival" and d.role == "survivor" end },
 		{ id = "dodgeball_win", check = function(p, d) return d.gamemode == "Dodgeball" end },
 	},
 

@@ -16,12 +16,13 @@ local getGamemodesFunc  = lobbyFolder:WaitForChild("GetGamemodes")
 
 -- ===== État local =====
 local searching   = false -- true dès qu'on a rejoint une file (via bouton ou zone)
+local inRound     = false -- true tant que le joueur est dans une partie lancée (round en cours)
 local menuOpen    = false
 local gamemodes   : { { name: string, description: string, minPlayers: number } } = {}
 
 local ZONE_COLORS = {
-	Infector  = Color3.fromRGB(220, 50,  50),
-	Dodgeball = Color3.fromRGB(50,  100, 220),
+	["Clown Survival"] = Color3.fromRGB(220, 50,  50),
+	Dodgeball          = Color3.fromRGB(50,  100, 220),
 }
 local DEFAULT_COLOR = Color3.fromRGB(120, 90, 200)
 
@@ -134,14 +135,27 @@ cancelButton.Parent             = searchingFrame
 Instance.new("UICorner", cancelButton).CornerRadius = UDim.new(0, 10)
 
 -- ===== Comportement =====
-local function setSearching(isSearching: boolean)
-	searching = isSearching
-	playButton.Visible     = not isSearching
-	searchingFrame.Visible = isSearching
-	if isSearching then
+local function refreshVisibility()
+	-- Le bouton "Jouer" reste caché tant qu'une recherche est en cours OU
+	-- que le joueur est dans une partie déjà lancée (évite de relancer une
+	-- nouvelle partie pendant qu'on est déjà en train d'en jouer une).
+	playButton.Visible     = not searching and not inRound
+	playButton.Active      = not inRound
+	searchingFrame.Visible = searching and not inRound
+	if searching or inRound then
 		menu.Visible = false
 		menuOpen = false
 	end
+end
+
+local function setSearching(isSearching: boolean)
+	searching = isSearching
+	refreshVisibility()
+end
+
+local function setInRound(isInRound: boolean)
+	inRound = isInRound
+	refreshVisibility()
 end
 
 local function closeMenu()
@@ -200,6 +214,9 @@ end)
 
 -- ===== Synchronisation avec l'état serveur (zone / file) =====
 playerZoneEvent.OnClientEvent:Connect(function(data)
+	if data.inRound ~= nil then
+		setInRound(data.inRound)
+	end
 	setSearching(data.gamemodeName ~= nil)
 end)
 

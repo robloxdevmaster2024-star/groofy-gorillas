@@ -15,8 +15,8 @@ return {
 	{ id = "first_win",     icon = "🏆", name = "Première victoire",       desc = "Gagne ton premier round." },
 	{ id = "win_5",         icon = "🌟", name = "En route vers la gloire", desc = "Gagne 5 rounds." },
 	{ id = "win_25",        icon = "🎖️", name = "Champion des gorilles",   desc = "Gagne 25 rounds." },
-	{ id = "infector_win",  icon = "🦠", name = "Contaminateur",           desc = "Gagne un round Infector en tant qu'infecteur." },
-	{ id = "survivor",      icon = "🛡️", name = "Indestructible",          desc = "Survie un round Infector sans jamais être infecté." },
+	{ id = "clown_win",     icon = "🦠", name = "Contaminateur",           desc = "Gagne un round Clown Survival en tant que clown." },
+	{ id = "survivor",      icon = "🛡️", name = "Indestructible",          desc = "Survie un round Clown Survival sans jamais être infecté." },
 	{ id = "dodgeball_win", icon = "🔴", name = "As du ballon",            desc = "Gagne un round Dodgeball." },
 
 	-- ===== Easter eggs (cachés jusqu'au déverrouillage) =====
