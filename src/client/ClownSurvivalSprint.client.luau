@@ -10,9 +10,127 @@ local Players           = game:GetService("Players")
 local UserInputService  = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService      = game:GetService("TweenService")
+local Lighting          = game:GetService("Lighting")
+local SoundService      = game:GetService("SoundService")
 
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
+
+-- Épuisement total (jauge à 0, cf. staminaDepleted côté serveur) : vision floutée + vignette aux
+-- bords + respiration essoufflée en boucle, jusqu'à ce que la jauge soit remontée à 100%.
+-- Purement local (Blur/vignette/Sound créés par ce LocalScript) : seul le joueur concerné les perçoit.
+--
+-- Le flou et la vignette suivent en continu la progression de la recharge (pas juste un aller-
+-- retour binaire à l'entrée/sortie de l'épuisement) : intensité maximale pile au moment où la
+-- jauge tombe à 0, puis ça s'atténue progressivement à mesure qu'elle remonte, pour disparaître
+-- pile quand elle est pleine — d'où "apparaît et disparaît progressivement tout au long de la
+-- durée de l'épuisement".
+local EXHAUSTION_BREATH_SOUND_ID   = "rbxassetid://6282917777"
+local EXHAUSTION_BLUR_SIZE         = 10.5 -- -25% de l'intensité initialement testée (14)
+local EXHAUSTION_VIGNETTE_THICKNESS = 70   -- px, léger volontairement
+local EXHAUSTION_BREATH_VOLUME     = 0.6
+local EXHAUSTION_SMOOTH_TIME       = 0.25 -- lisse les à-coups du throttle réseau (~10 maj/s)
+
+local exhaustionBlur = Instance.new("BlurEffect")
+exhaustionBlur.Name = "ClownSurvivalExhaustionBlur"
+exhaustionBlur.Size = 0
+exhaustionBlur.Parent = Lighting
+
+local breathSound = Instance.new("Sound")
+breathSound.Name = "ClownSurvivalExhaustionBreath"
+breathSound.SoundId = EXHAUSTION_BREATH_SOUND_ID
+breathSound.Looped = true
+breathSound.Volume = 0
+breathSound.Parent = SoundService
+
+-- ===== Vignette (4 bandes aux bords, sans asset image : UIGradient pour l'atténuation interne) =====
+local vignetteGui = Instance.new("ScreenGui")
+vignetteGui.Name = "ClownSurvivalExhaustionVignette"
+vignetteGui.ResetOnSpawn = false
+vignetteGui.IgnoreGuiInset = true
+vignetteGui.DisplayOrder = -1
+vignetteGui.Parent = playerGui
+
+-- `reversed` : la bande est ancrée par son bord OPAQUE (écran) et grandit vers l'intérieur
+-- (transparent) ; pour Bottom/Right cet ordre est inversé par rapport à Top/Left car l'ancre est
+-- du côté opposé (voir AnchorPoint plus bas).
+local function makeVignetteBar(anchor: Vector2, position: UDim2, vertical: boolean, reversed: boolean): Frame
+	local bar = Instance.new("Frame")
+	bar.AnchorPoint = anchor
+	bar.Position = position
+	bar.Size = vertical and UDim2.new(1, 0, 0, 0) or UDim2.new(0, 0, 1, 0)
+	bar.BackgroundColor3 = Color3.new(0, 0, 0)
+	bar.BackgroundTransparency = 0.35
+	bar.BorderSizePixel = 0
+	bar.Parent = vignetteGui
+
+	local gradient = Instance.new("UIGradient")
+	gradient.Rotation = vertical and 90 or 0
+	gradient.Transparency = reversed
+		and NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0.1) })
+		or NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.1), NumberSequenceKeypoint.new(1, 1) })
+	gradient.Parent = bar
+
+	return bar
+end
+
+local vignetteTop    = makeVignetteBar(Vector2.new(0.5, 0), UDim2.new(0.5, 0, 0, 0), true, false)
+local vignetteBottom = makeVignetteBar(Vector2.new(0.5, 1), UDim2.new(0.5, 0, 1, 0), true, true)
+local vignetteLeft   = makeVignetteBar(Vector2.new(0, 0.5), UDim2.new(0, 0, 0.5, 0), false, false)
+local vignetteRight  = makeVignetteBar(Vector2.new(1, 0.5), UDim2.new(1, 0, 0.5, 0), false, true)
+local vignetteBars = { vignetteTop, vignetteBottom, vignetteLeft, vignetteRight }
+
+local blurTween: Tween? = nil
+local volumeTween: Tween? = nil
+local vignetteTweens: { Tween } = {}
+local wasDepleted = false
+
+-- `fraction` = stamina actuelle / max (0..1), `depleted` = staminaDepleted côté serveur.
+local function setExhaustionFeedback(fraction: number, depleted: boolean)
+	-- Intensité continue : 1 pile à la chute à 0, redescend à 0 au fur et à mesure de la recharge.
+	local t = depleted and (1 - fraction) or 0
+
+	if blurTween then blurTween:Cancel() end
+	blurTween = TweenService:Create(
+		exhaustionBlur,
+		TweenInfo.new(EXHAUSTION_SMOOTH_TIME, Enum.EasingStyle.Linear),
+		{ Size = EXHAUSTION_BLUR_SIZE * t }
+	)
+	blurTween:Play()
+
+	for _, tween in vignetteTweens do tween:Cancel() end
+	vignetteTweens = {}
+	for _, bar in vignetteBars do
+		local vertical = bar == vignetteTop or bar == vignetteBottom
+		local targetSize = vertical
+			and UDim2.new(1, 0, 0, EXHAUSTION_VIGNETTE_THICKNESS * t)
+			or UDim2.new(0, EXHAUSTION_VIGNETTE_THICKNESS * t, 1, 0)
+		local tween = TweenService:Create(bar, TweenInfo.new(EXHAUSTION_SMOOTH_TIME, Enum.EasingStyle.Linear), { Size = targetSize })
+		tween:Play()
+		table.insert(vignetteTweens, tween)
+	end
+
+	if depleted and not wasDepleted then
+		breathSound.Volume = 0
+		breathSound:Play()
+	end
+	wasDepleted = depleted
+
+	if volumeTween then volumeTween:Cancel() end
+	volumeTween = TweenService:Create(
+		breathSound,
+		TweenInfo.new(EXHAUSTION_SMOOTH_TIME, Enum.EasingStyle.Linear),
+		{ Volume = EXHAUSTION_BREATH_VOLUME * t }
+	)
+	volumeTween:Play()
+	if not depleted then
+		volumeTween.Completed:Connect(function()
+			if not wasDepleted then
+				breathSound:Stop()
+			end
+		end)
+	end
+end
 
 local eventsFolder        = ReplicatedStorage:WaitForChild("ClownSurvivalEvents")
 local sprintAvailableEvent = eventsFolder:WaitForChild("SprintAvailable")
@@ -31,6 +149,19 @@ gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.Enabled = false
 gui.Parent = playerGui
+
+local staminaLabel = Instance.new("TextLabel")
+staminaLabel.Name = "StaminaLabel"
+staminaLabel.AnchorPoint = Vector2.new(0.5, 1)
+staminaLabel.Position = UDim2.new(0.5, 0, 1, -38)
+staminaLabel.Size = UDim2.new(0, 260, 0, 16)
+staminaLabel.BackgroundTransparency = 1
+staminaLabel.Text = "STAMINA"
+staminaLabel.TextColor3 = Color3.fromRGB(240, 210, 60)
+staminaLabel.TextStrokeTransparency = 0.4
+staminaLabel.Font = Enum.Font.GothamBold
+staminaLabel.TextScaled = true
+staminaLabel.Parent = gui
 
 local barBg = Instance.new("Frame")
 barBg.Name = "StaminaBar"
@@ -64,7 +195,7 @@ end
 local STAMINA_TWEEN_DURATION = 0.15
 local staminaTween: Tween? = nil
 
-staminaUpdateEvent.OnClientEvent:Connect(function(fraction: number)
+staminaUpdateEvent.OnClientEvent:Connect(function(fraction: number, depleted: boolean?)
 	if typeof(fraction) ~= "number" then return end
 	fraction = math.clamp(fraction, 0, 1)
 
@@ -79,6 +210,7 @@ staminaUpdateEvent.OnClientEvent:Connect(function(fraction: number)
 	staminaTween:Play()
 
 	barFill.BackgroundColor3 = colorForStamina(fraction)
+	setExhaustionFeedback(fraction, depleted == true)
 end)
 
 -- ===== Boutons mobile (maintenir pour courir / taper pour glisser) =====
@@ -186,6 +318,7 @@ local function deactivate()
 	isActive = false
 	gui.Enabled = false
 	setSprinting(false)
+	setExhaustionFeedback(1, false) -- ne pas laisser le flou/la vignette/la respiration collés entre deux rounds
 	for _, conn in inputConns do conn:Disconnect() end
 	inputConns = {}
 	if mobileGui and mobileGui.Parent then mobileGui:Destroy() end

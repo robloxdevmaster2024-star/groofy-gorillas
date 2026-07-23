@@ -11,9 +11,12 @@
 local Players           = game:GetService("Players")
 local ServerStorage     = game:GetService("ServerStorage")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService        = game:GetService("RunService")
 
-local RoundRunner  = require(script.Parent.RoundRunner)
-local GameSettings = require(script.Parent.GameSettings)
+local RoundRunner        = require(script.Parent.RoundRunner)
+local GameSettings       = require(script.Parent.GameSettings)
+local MatchmakingService = require(script.Parent.MatchmakingService)
+local MatchmakingConfig  = require(script.Parent.MatchmakingConfig)
 
 local GameStatus = ReplicatedStorage:WaitForChild("GameStatus")
 
@@ -36,7 +39,7 @@ getGamemodesFunc.Name    = "GetGamemodes"
 getGamemodesFunc.Parent  = lobbyFolder
 
 -- ===== Constantes =====
-local COUNTDOWN      = 15   -- secondes avant le lancement
+local COUNTDOWN      = 5    -- secondes avant le lancement
 local RETURN_DELAY   = 3    -- secondes après round avant retour lobby
 
 local ZONE_COLORS = {
@@ -60,8 +63,8 @@ local roundInProgress    = false
 local lobbySpawns : { CFrame } = {}
 local zoneParts   : { [string]: BasePart } = {}
 
--- queue par gamemode : { players: {[Player]: true}, inCountdown: bool }
-local queues : { [string]: { players: { [Player]: boolean }, inCountdown: boolean } } = {}
+-- queue par gamemode : { players: {[Player]: true}, inCountdown: bool, timeLeft: number }
+local queues : { [string]: { players: { [Player]: boolean }, inCountdown: boolean, timeLeft: number } } = {}
 
 -- zone actuelle de chaque joueur
 local playerZone : { [Player]: string? } = {}
@@ -291,6 +294,7 @@ end
 joinQueue = function(player: Player, gamemodeName: string, viaButton: boolean?)
 	if not queues[gamemodeName] then return end
 	if playersInRound[player] then return end -- déjà en partie : requête ignorée (anti-triche)
+	if MatchmakingConfig.Enabled and MatchmakingService.IsSearching(player) then return end -- déjà en recherche cross-serveur
 	if playerZone[player] == gamemodeName then
 		queuedViaButton[player] = viaButton or queuedViaButton[player] or false
 		return
@@ -305,6 +309,13 @@ joinQueue = function(player: Player, gamemodeName: string, viaButton: boolean?)
 	queues[gamemodeName].players[player] = true
 	updateBillboard(gamemodeName)
 	playerZoneEvent:FireClient(player, { gamemodeName = gamemodeName })
+
+	local q = queues[gamemodeName]
+	if q.inCountdown then
+		-- Un nouveau joueur vient de rejoindre pendant le décompte : on repart du cooldown de base.
+		q.timeLeft = COUNTDOWN
+	end
+
 	checkAndMaybeCountdown(gamemodeName)
 end
 
@@ -314,12 +325,15 @@ checkAndMaybeCountdown = function(gamemodeName: string)
 	if queueCount(gamemodeName) < minPlayers(gamemodeName) then return end
 
 	q.inCountdown = true
+	q.timeLeft    = COUNTDOWN
 	local gm = getGamemode(gamemodeName)
 	if gm then GameSettings.OpenPanel(gm) end
 	updateBillboard(gamemodeName)
 
 	task.spawn(function()
-		for t = COUNTDOWN, 1, -1 do
+		-- Boucle sur q.timeLeft (pas une variable locale) : joinQueue() peut le remettre à
+		-- COUNTDOWN à tout moment si un nouveau joueur rejoint pendant le décompte.
+		while q.timeLeft > 0 do
 			-- Annuler si pas assez de joueurs
 			if queueCount(gamemodeName) < minPlayers(gamemodeName) then
 				q.inCountdown = false
@@ -328,16 +342,17 @@ checkAndMaybeCountdown = function(gamemodeName: string)
 				updateBillboard(gamemodeName)
 				return
 			end
-			setCountdownText(gamemodeName, "🚀 Départ dans " .. t .. "s")
+			setCountdownText(gamemodeName, "🚀 Départ dans " .. q.timeLeft .. "s")
 			zoneUpdateEvent:FireAllClients({
 				gamemodeName    = gamemodeName,
 				count           = queueCount(gamemodeName),
 				minPlayers      = minPlayers(gamemodeName),
 				inCountdown     = true,
-				countdown       = t,
+				countdown       = q.timeLeft,
 				roundInProgress = false,
 			})
 			task.wait(1)
+			q.timeLeft -= 1
 		end
 
 		-- Lancement
@@ -452,6 +467,47 @@ task.spawn(function()
 	end
 end)
 
+-- ===== Anti-triche (hub) : vitesse + vol =====
+-- Même principe que l'anti-triche de Clown Survival (voir ClownSurvival.luau ->
+-- getMovementState/STATE_MAX_SPEED), en version simplifiée pour le hub : pas de sprint/glissade
+-- ici, juste la marche + le saut natifs Roblox. Vise les speed-hacks (vitesse horizontale) ET les
+-- fly-hacks basiques (vélocité verticale anormalement soutenue vers le haut, largement au-dessus
+-- de ce qu'un saut normal peut produire). Les joueurs déjà en partie sont ignorés : leur propre
+-- gamemode a déjà son anti-triche adapté (sprint/glissade/dash autorisés à des vitesses plus hautes).
+local HUB_SPEED_TOLERANCE  = 1.35
+local HUB_MAX_HORIZONTAL   = 16 * HUB_SPEED_TOLERANCE -- WalkSpeed par défaut du hub (16) + marge
+local HUB_MAX_UPWARD_SPEED = 60 -- studs/s : nettement au-dessus d'un saut normal (JumpPower ~50)
+
+local function stepHubAntiCheat()
+	for _, player in Players:GetPlayers() do
+		if playersInRound[player] then continue end -- géré par l'anti-triche du round lui-même
+
+		local char = player.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if not hum or not hrp or hum.PlatformStand then continue end -- PlatformStand : ragdoll/effet légitime en cours
+
+		local velocity = hrp.AssemblyLinearVelocity
+		local horizontal = Vector3.new(velocity.X, 0, velocity.Z)
+		local corrected = velocity
+
+		if horizontal.Magnitude > HUB_MAX_HORIZONTAL then
+			local clampedHorizontal = horizontal.Unit * HUB_MAX_HORIZONTAL
+			corrected = Vector3.new(clampedHorizontal.X, corrected.Y, clampedHorizontal.Z)
+		end
+
+		if corrected.Y > HUB_MAX_UPWARD_SPEED then
+			corrected = Vector3.new(corrected.X, HUB_MAX_UPWARD_SPEED, corrected.Z)
+		end
+
+		if corrected ~= velocity then
+			hrp.AssemblyLinearVelocity = corrected
+			warn(("[Anti-triche hub] Vitesse anormale corrigée pour %s"):format(player.Name))
+		end
+	end
+end
+RunService.Heartbeat:Connect(stepHubAntiCheat)
+
 -- ===== API publique =====
 
 function LobbyService.Start(gamemodes)
@@ -459,7 +515,13 @@ function LobbyService.Start(gamemodes)
 
 	-- Initialise les queues
 	for _, gm in gamemodes do
-		queues[gm.Name] = { players = {}, inCountdown = false }
+		queues[gm.Name] = { players = {}, inCountdown = false, timeLeft = 0 }
+	end
+
+	-- File d'attente cross-serveur (voir MatchmakingService.luau) : SUSPENDU pour l'instant, voir
+	-- MatchmakingConfig.luau pour la raison et comment reprendre.
+	if MatchmakingConfig.Enabled then
+		MatchmakingService.Start(gamemodes)
 	end
 
 	-- Charge la map lobby si disponible
@@ -523,15 +585,34 @@ function LobbyService.Start(gamemodes)
 
 	Players.PlayerRemoving:Connect(removeFromQueues)
 
-	-- Bouton "Jouer" client : requête de rejoindre une file par nom de gamemode
+	-- Bouton "Jouer" client : recherche CROSS-SERVEUR (voir MatchmakingService.luau) quand
+	-- activé — sinon (voir MatchmakingConfig.luau, SUSPENDU pour l'instant), retombe sur
+	-- l'ancien comportement 100% local, identique à avant l'ajout du matchmaking cross-serveur.
 	requestJoinEvent.OnServerEvent:Connect(function(player, gamemodeName)
 		if type(gamemodeName) ~= "string" then return end
-		joinQueue(player, gamemodeName, true)
+
+		if not MatchmakingConfig.Enabled then
+			joinQueue(player, gamemodeName, true)
+			return
+		end
+
+		if not queues[gamemodeName] then return end
+		if playersInRound[player] then return end -- déjà en partie (anti-triche)
+		if playerZone[player] then return end -- déjà dans une file locale (zone) : pas de double recherche
+		if MatchmakingService.IsSearching(player) then return end
+
+		MatchmakingService.Enqueue(player, gamemodeName)
+		playerZoneEvent:FireClient(player, { gamemodeName = gamemodeName })
 	end)
 
-	-- Annulation de la recherche depuis le client
+	-- Annulation de la recherche depuis le client (locale OU cross-serveur)
 	requestLeaveEvent.OnServerEvent:Connect(function(player)
-		removeFromQueues(player)
+		if MatchmakingConfig.Enabled and MatchmakingService.IsSearching(player) then
+			MatchmakingService.Dequeue(player)
+			playerZoneEvent:FireClient(player, { gamemodeName = nil })
+		else
+			removeFromQueues(player)
+		end
 	end)
 
 	-- Fournit la liste des gamemodes (nom, description, min joueurs) pour le menu client

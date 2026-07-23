@@ -1,21 +1,32 @@
 --!nonstrict
 -- DataService.luau — Persistance joueur : Goofy Points, niveaux, cosmétiques.
 -- API : GetProfile(player), AddGoofyPoints(player, n), GetLevel(player)
+--
+-- Basé sur ProfileStore (src/server/ProfileStore.luau, vendored depuis
+-- https://github.com/MadStudioRoblox/ProfileStore, licence MIT) plutôt que DataStoreService brut :
+--   - Session-lock : un même profil ne peut être actif que sur UN SEUL serveur à la fois.
+--     `StartSessionAsync` gère lui-même les reconnexions rapides (retry automatique pendant
+--     jusqu'à 120s si le profil est encore verrouillé ailleurs) avant d'abandonner.
+--   - Anti-perte : sauvegardes périodiques + sauvegarde de fermeture (`game:BindToClose`) gérées
+--     EN INTERNE par ProfileStore — pas besoin de dupliquer cette logique ici.
+--   - Retries : `GetAsync`/`SetAsync` internes à ProfileStore sont déjà entourés de pcall/retry.
+-- Notre travail ici se limite donc à bien UTILISER l'API (StartSessionAsync/EndSession/Reconcile),
+-- pas à réimplémenter la fiabilité nous-mêmes.
 
-local Players        = game:GetService("Players")
-local DataStoreService = game:GetService("DataStoreService")
+local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local ProfileStoreModule = require(script.Parent.ProfileStore)
 
 local PlayerConfig = require(
 	ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("PlayerConfig")
 )
-local LeaderboardService  = require(script.Parent.LeaderboardService)
-local AchievementService  = require(script.Parent.AchievementService)
+local LeaderboardService = require(script.Parent.LeaderboardService)
+local AchievementService = require(script.Parent.AchievementService)
 
 -- ===== Config =====
 
-local STORE_KEY    = "GoofyGorillas_v1"
-local SAVE_INTERVAL = 60  -- auto-save toutes les N secondes
+local STORE_KEY = "GoofyGorillas_v2" -- v2 : passage à ProfileStore, format différent de l'ancien DataStore brut (v1)
 
 local TEMPLATE = {
 	goofyPoints    = 0,
@@ -30,45 +41,21 @@ local TEMPLATE = {
 	},
 }
 
--- ===== Init DataStore =====
-
-local store
-do
-	local ok, err = pcall(function()
-		store = DataStoreService:GetDataStore(STORE_KEY)
-	end)
-	if not ok then
-		warn("[DataService] DataStore indisponible (mode offline ?) :", err)
-	end
-end
+local playerStore = ProfileStoreModule.New(STORE_KEY, TEMPLATE)
 
 -- RemoteEvent : le serveur notifie les clients de leurs données
 local DataUpdated = Instance.new("RemoteEvent")
 DataUpdated.Name  = "DataUpdated"
 DataUpdated.Parent = ReplicatedStorage
 
--- ===== Helpers =====
+-- ===== État =====
 
-local profiles   = {}   -- [userId] → data table
-local saveLocks  = {}   -- [userId] → bool (évite les saves concurrentes)
+local profiles: { [Player]: any } = {} -- [Player] → Profile ProfileStore (Profile.Data = la table de jeu)
 
-local function deepCopy(t)
-	local copy = {}
-	for k, v in t do
-		copy[k] = type(v) == "table" and deepCopy(v) or v
-	end
-	return copy
-end
-
-local function reconcile(data, template)
-	for k, v in template do
-		if data[k] == nil then
-			data[k] = type(v) == "table" and deepCopy(v) or v
-		elseif type(v) == "table" and type(data[k]) == "table" then
-			reconcile(data[k], v)
-		end
-	end
-end
+-- `OnSessionEnd` se déclenche aussi bien quand un AUTRE serveur vole la session que quand NOUS
+-- appelons nous-mêmes `profile:EndSession()` (déconnexion normale, voir onPlayerRemoving) — sans
+-- distinction, un joueur qui quitte normalement se ferait quand même kick inutilement.
+local voluntaryEnding: { [Player]: boolean } = {}
 
 local function computeLevel(points)
 	for lvl = PlayerConfig.MAX_LEVEL, 1, -1 do
@@ -77,41 +64,6 @@ local function computeLevel(points)
 		end
 	end
 	return 1
-end
-
--- ===== DataStore I/O =====
-
-local function loadData(userId)
-	if not store then return deepCopy(TEMPLATE) end
-	local key = "u_" .. userId
-	local data
-	for attempt = 1, 3 do
-		local ok, result = pcall(function() return store:GetAsync(key) end)
-		if ok then
-			data = result
-			break
-		end
-		warn("[DataService] GetAsync tentative", attempt, "échouée :", result)
-		task.wait(2)
-	end
-	if type(data) ~= "table" then data = deepCopy(TEMPLATE) end
-	reconcile(data, TEMPLATE)
-	return data
-end
-
-local function saveData(userId, data)
-	if not store or saveLocks[userId] then return end
-	saveLocks[userId] = true
-	local key = "u_" .. userId
-	for attempt = 1, 3 do
-		local ok, err = pcall(function() store:SetAsync(key, data) end)
-		if ok then break end
-		if attempt == 3 then
-			warn("[DataService] Échec sauvegarde userId", userId, ":", err)
-		end
-		task.wait(2)
-	end
-	saveLocks[userId] = false
 end
 
 -- ===== Leaderstats =====
@@ -143,23 +95,25 @@ end
 local DataService = {}
 
 function DataService.GetProfile(player)
-	return profiles[player.UserId]
+	local profile = profiles[player]
+	return profile and profile.Data
 end
 
 function DataService.GetLevel(player)
-	local d = profiles[player.UserId]
-	return d and d.level or 1
+	local profile = profiles[player]
+	return profile and profile.Data.level or 1
 end
 
 function DataService.GetNextThreshold(player)
-	local d = profiles[player.UserId]
-	if not d then return nil end
-	return PlayerConfig.LEVEL_THRESHOLDS[d.level + 1]
+	local profile = profiles[player]
+	if not profile then return nil end
+	return PlayerConfig.LEVEL_THRESHOLDS[profile.Data.level + 1]
 end
 
 function DataService.AddGoofyPoints(player, amount)
-	local data = profiles[player.UserId]
-	if not data then return end
+	local profile = profiles[player]
+	if not profile then return end
+	local data = profile.Data
 
 	data.goofyPoints = math.max(0, data.goofyPoints + amount)
 
@@ -172,34 +126,74 @@ function DataService.AddGoofyPoints(player, amount)
 	AchievementService.Check(player, data, "gp_change")
 
 	DataUpdated:FireClient(player, {
-		goofyPoints    = data.goofyPoints,
-		level          = data.level,
-		leveledUp      = leveledUp,
+		goofyPoints = data.goofyPoints,
+		level       = data.level,
+		leveledUp   = leveledUp,
 	})
 end
 
 -- ===== Cycle de vie des joueurs =====
 
-local function onPlayerAdded(player)
-	local data = loadData(player.UserId)
-	profiles[player.UserId] = data
-	syncLeaderstats(player, data)
-	LeaderboardService.UpdateScore(player.UserId, data.goofyPoints)
+local function onPlayerAdded(player: Player)
+	-- StartSessionAsync gère lui-même les reconnexions rapides : si ce profil est encore
+	-- verrouillé par un autre serveur, il RETENTE automatiquement (jusqu'à ~120s) avant
+	-- d'abandonner (retourne nil) — pas besoin de boucle de retry manuelle ici.
+	local profile = playerStore:StartSessionAsync(tostring(player.UserId), {
+		Cancel = function()
+			return player.Parent ~= Players -- le joueur est parti avant la fin du chargement
+		end,
+	})
+
+	if not profile then
+		-- Verrouillé ailleurs après tous les essais internes, ou le joueur est parti entre-temps.
+		if player.Parent == Players then
+			player:Kick("Impossible de charger tes données pour le moment (déjà en cours de chargement ailleurs). Réessaie dans un instant.")
+		end
+		return
+	end
+
+	profile:AddUserId(player.UserId) -- association GDPR
+	profile:Reconcile() -- comble les champs manquants depuis TEMPLATE (nouveaux champs ajoutés après coup)
+
+	profile.OnSessionEnd:Connect(function()
+		profiles[player] = nil
+		local wasVoluntary = voluntaryEnding[player]
+		voluntaryEnding[player] = nil
+		if wasVoluntary then return end -- déconnexion normale (onPlayerRemoving) : rien à faire de plus
+
+		-- Un autre serveur a volé la session (ou celle-ci a expiré) : ce joueur n'a plus de
+		-- profil actif ici, impossible de continuer à jouer en toute sécurité sur CE serveur.
+		if player.Parent == Players then
+			player:Kick("Tes données ont été chargées par un autre serveur. Reconnecte-toi.")
+		end
+	end)
+
+	if player.Parent ~= Players then
+		-- Le joueur est parti PENDANT le chargement (StartSessionAsync a pu prendre du temps en
+		-- cas de conflit de session) : libère immédiatement, sinon la session resterait verrouillée
+		-- pour rien jusqu'à expiration.
+		profile:EndSession()
+		return
+	end
+
+	profiles[player] = profile
+	syncLeaderstats(player, profile.Data)
+	LeaderboardService.UpdateScore(player.UserId, profile.Data.goofyPoints)
 	DataUpdated:FireClient(player, {
-		goofyPoints = data.goofyPoints,
-		level       = data.level,
+		goofyPoints = profile.Data.goofyPoints,
+		level       = profile.Data.level,
 		leveledUp   = false,
 	})
-	print("[DataService]", player.Name, "chargé — Lvl", data.level, "| GP", data.goofyPoints)
+	print("[DataService]", player.Name, "chargé — Lvl", profile.Data.level, "| GP", profile.Data.goofyPoints)
 end
 
-local function onPlayerRemoving(player)
-	local data = profiles[player.UserId]
-	if data then
-		saveData(player.UserId, data)
-		profiles[player.UserId] = nil
+local function onPlayerRemoving(player: Player)
+	local profile = profiles[player]
+	if profile then
+		voluntaryEnding[player] = true
+		profile:EndSession() -- déclenche la sauvegarde finale (ProfileStore s'en charge)
+		profiles[player] = nil
 	end
-	saveLocks[player.UserId] = nil
 end
 
 Players.PlayerAdded:Connect(onPlayerAdded)
@@ -210,23 +204,8 @@ for _, p in Players:GetPlayers() do
 	task.spawn(onPlayerAdded, p)
 end
 
--- Auto-save périodique
-task.spawn(function()
-	while true do
-		task.wait(SAVE_INTERVAL)
-		for userId, data in profiles do
-			local p = Players:GetPlayerByUserId(userId)
-			if p then task.spawn(saveData, userId, data) end
-		end
-	end
-end)
+-- Pas d'auto-save ni de BindToClose ici : ProfileStore gère déjà tout ça en interne pour chaque
+-- profil actif (voir l'en-tête de ProfileStore.luau).
 
--- Sauvegarde forcée à la fermeture du serveur
-game:BindToClose(function()
-	for userId, data in profiles do
-		saveData(userId, data)
-	end
-end)
-
-print("[DataService] démarré ✅")
+print("[DataService] démarré ✅ (ProfileStore)")
 return DataService

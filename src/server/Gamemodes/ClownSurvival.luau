@@ -29,6 +29,17 @@ local sprintAvailableEvent = getOrCreate(eventsFolder, "SprintAvailable"); sprin
 local setSprintingEvent    = getOrCreate(eventsFolder, "SetSprinting");    setSprintingEvent.Name    = "SetSprinting"
 local staminaUpdateEvent   = getOrCreate(eventsFolder, "StaminaUpdate");   staminaUpdateEvent.Name   = "StaminaUpdate"
 local slideEvent           = getOrCreate(eventsFolder, "Slide");           slideEvent.Name           = "Slide"
+local proneAvailableEvent  = getOrCreate(eventsFolder, "ProneAvailable");  proneAvailableEvent.Name  = "ProneAvailable"
+local proneEvent           = getOrCreate(eventsFolder, "ToggleProne");     proneEvent.Name           = "ToggleProne"
+local proneStateEvent      = getOrCreate(eventsFolder, "ProneState");      proneStateEvent.Name      = "ProneState"
+local bhopJumpEvent        = getOrCreate(eventsFolder, "BhopJumpPressed"); bhopJumpEvent.Name        = "BhopJumpPressed"
+local dashAvailableEvent   = getOrCreate(eventsFolder, "DashAvailable");   dashAvailableEvent.Name   = "DashAvailable"
+local dashRequestEvent     = getOrCreate(eventsFolder, "DashRequest");     dashRequestEvent.Name     = "DashRequest"
+local dashPerformedEvent   = getOrCreate(eventsFolder, "DashPerformed");   dashPerformedEvent.Name   = "DashPerformed"
+local visionAvailableEvent = getOrCreate(eventsFolder, "VisionAvailable"); visionAvailableEvent.Name = "VisionAvailable"
+local visionRequestEvent   = getOrCreate(eventsFolder, "VisionRequest");   visionRequestEvent.Name   = "VisionRequest"
+local visionGrantedEvent   = getOrCreate(eventsFolder, "VisionGranted");   visionGrantedEvent.Name   = "VisionGranted"
+local movementStateEvent   = getOrCreate(eventsFolder, "MovementStateChanged"); movementStateEvent.Name = "MovementStateChanged"
 
 local ClownSurvival = {}
 
@@ -50,8 +61,8 @@ ClownSurvival.SettingsSchema = {
 	{ key = "knockbackForce",    label = "Force du knockback",       min = 30,  max = 200, step = 10  },
 }
 
--- Nombre de clowns de départ = 1 pour CLOWNS_PLAYER_RATIO joueurs (mini 1), ex. 12 joueurs → 2 clowns.
-local CLOWNS_PLAYER_RATIO = 6
+-- Nombre de clowns de départ = 1 pour CLOWNS_PLAYER_RATIO joueurs (mini 1), ex. 10 joueurs → 2 clowns.
+local CLOWNS_PLAYER_RATIO = 5
 
 -- Plafond de clowns simultanés : ~40% de l'effectif ENCORE PRÉSENT (recalculé à chaque coup de
 -- batte, pas figé au début du round — des joueurs peuvent se déconnecter en cours de partie,
@@ -83,7 +94,7 @@ local savedLighting: { [string]: any }? = nil
 -- plus le clown enchaîne les coups rapidement (boucle "envie de re-taper").
 local comboCount: { [Player]: number } = {}
 local comboLastHit: { [Player]: number } = {}
-local COMBO_RESET_WINDOW = 4.0 -- s sans coup avant que le combo retombe à 1
+local COMBO_RESET_WINDOW = 10.0 -- s sans coup avant que le combo retombe à 1 (= durée de la barre client)
 
 -- Micro hit-stop : on gèle très brièvement la victime au moment de l'impact (avant l'envol/le
 -- ragdoll) pour donner du poids au coup, façon "influence frame" des jeux de combat/anime.
@@ -98,22 +109,33 @@ local SPRINT_WALK_SPEED     = 26
 local MAX_STAMINA           = 100
 local STAMINA_DRAIN_PER_SEC = 25 -- ~4s de sprint continu pour vider la jauge
 local STAMINA_REGEN_PER_SEC = 15 -- recharge plus lente que la vidange
+-- Recharge accélérée une fois la jauge totalement vidée (classique dans les jeux vidéo : on est
+-- pénalisé à court terme — sprint/glissade bloqués — mais ça récupère plus vite en échange).
+local STAMINA_REGEN_PER_SEC_DEPLETED = 30
 local STAMINA_BROADCAST_INTERVAL = 0.1 -- s entre deux mises à jour envoyées au client (throttle réseau)
+-- Petite pause avant que la recharge démarre après avoir consommé de la stamina (sprint ou
+-- glissade) : plus réaliste qu'une recharge instantanée dès qu'on relâche Shift.
+local STAMINA_REGEN_DELAY = 0.5 -- s
 
--- Fatigue : si la jauge tombe à 0, pénalité de vitesse + sprint bloqué pendant EXHAUSTION_DURATION,
--- pour inciter à gérer sa stamina plutôt qu'à tout claquer d'un coup.
-local EXHAUSTION_DURATION  = 2.0 -- s
+-- Fatigue : si la jauge tombe à 0, pénalité de vitesse ET saut/couché bloqués, jusqu'à ce que la
+-- jauge soit remontée à 100% (durée = staminaDepleted, pas un minuteur fixe indépendant).
 local EXHAUSTED_WALK_SPEED = 12  -- < BASE_WALK_SPEED
 
 local stamina: { [Player]: number } = {}
 local sprinting: { [Player]: boolean } = {}
-local exhaustedUntil: { [Player]: number } = {} -- os.clock() jusqu'à laquelle le joueur est fatigué
+local lastStaminaUse: { [Player]: number } = {} -- os.clock() de la dernière consommation (sprint/glissade)
+-- true dès que la jauge tombe à 0 : sprint, glissade, saut ET couché restent bloqués (+ pénalité
+-- de vitesse de marche) tant que la jauge n'est pas remontée à 100%.
+local staminaDepleted: { [Player]: boolean } = {}
 
 -- Glissade : seulement possible en plein sprint, coûte 1/6 de la jauge MAX d'un coup, puis
--- décélère linéairement (friction constante = réaliste) jusqu'à l'arrêt. La hitbox est vraiment
--- abaissée (BodyHeightScale + HipHeight réduits, pas juste visuel) pour pouvoir passer sous des
--- obstacles bas — la détection des coups de batte n'en tient pas compte (pas de check de hauteur).
-local SLIDE_DURATION       = 0.55 -- s
+-- décélère (courbe en racine carrée : reste rapide la majeure partie du temps puis coupe net
+-- tout à la fin — plutôt qu'une décroissance linéaire qui donnait l'impression de "ramper" sans
+-- contrôle pendant la fin de la glissade) jusqu'à l'arrêt. La hitbox est vraiment abaissée
+-- (BodyHeightScale + HipHeight réduits, pas juste visuel) pour pouvoir passer sous des obstacles
+-- bas — la détection des coups de batte n'en tient pas compte (pas de check de hauteur).
+local SLIDE_DURATION       = 0.9  -- s (durée totale, phase de vitesse constante + décélération)
+local SLIDE_HOLD_DURATION  = 0.2  -- s : vitesse quasi constante avant que la décélération démarre
 local SLIDE_INITIAL_SPEED  = 34   -- studs/s, un peu plus que le sprint pour un vrai "boost"
 local SLIDE_STAMINA_COST   = MAX_STAMINA / 6
 local SLIDE_WALK_SPEED     = 4    -- pendant la glissade : le contrôle normal du joueur pèse peu
@@ -128,6 +150,101 @@ local SLIDE_GRACE_WINDOW = 0.8 -- s
 
 local sliding: { [Player]: any } = {} -- { direction, startTime, originalHipHeight, bodyHeightScale, originalBodyHeightScale }
 local lastSprintStart: { [Player]: number } = {}
+
+-- Se coucher/ramper : réservé aux survivants (pas les clowns), bascule (toggle) via touche C /
+-- bouton mobile. But : passer sous des obstacles bas comme la glissade, mais en posture PERSISTANTE
+-- (pas une ruée chronométrée) et en rampant lentement plutôt qu'en gardant la vitesse normale.
+local PRONE_WALK_SPEED        = 7    -- studs/s, ~44% de BASE_WALK_SPEED : compromis vitesse/passage
+local PRONE_HIP_HEIGHT_FACTOR = 0.15 -- bien plus bas que la glissade (posture couchée, pas accroupie)
+local PRONE_BODY_HEIGHT_SCALE = 0.35 -- R15 uniquement (pas de scale sur R6)
+
+local prone: { [Player]: any } = {} -- { originalHipHeight, bodyHeightScale, originalBodyHeightScale }
+
+-- Bunny hop (tout le monde, comme le sprint) : sauter pile au moment de toucher le sol (dans la
+-- fenêtre BHOP_LANDING_WINDOW après l'atterrissage) enchaîne un bonus de vitesse horizontale au
+-- lieu de retomber à la vitesse de course normale. Un saut mal timé (hors fenêtre, ou premier saut
+-- sans atterrissage récent) remet le bonus à zéro : il faut retrouver le rythme depuis la course
+-- normale, façon bunny hop des FPS classiques (CS, Quake...).
+--
+-- Détection par APPUI (RemoteEvent BhopJumpPressed, envoyé par le client sur le front descendant
+-- de la touche/bouton de saut), PAS par l'état "Jumping" du Humanoid : Roblox refait sauter tout
+-- seul un personnage tant que la touche de saut reste enfoncée (dès qu'il retouche le sol), donc
+-- se contenter de l'état Humanoid permettrait de bhop en boucle juste en maintenant Espace, sans
+-- aucun timing. On exige un VRAI ré-appui (front montant) à chaque saut enchaîné.
+local BHOP_LANDING_WINDOW      = 0.15 -- s après l'atterrissage pour que le saut suivant soit "enchaîné"
+local BHOP_SPEED_BONUS_PER_HOP = 2.5  -- studs/s gagnés par saut bien enchaîné
+local BHOP_MAX_SPEED           = SPRINT_WALK_SPEED + 12 -- plafond anti-abus : le bonus ne s'accumule pas à l'infini
+local BHOP_PRESS_DEBOUNCE      = 0.1  -- s minimum entre deux appuis acceptés (anti-spam RemoteEvent)
+
+local bhopBoost: { [Player]: number } = {}     -- vitesse bonus actuelle (0 = pas de chaîne en cours)
+local bhopLastLand: { [Player]: number } = {}  -- os.clock() du dernier atterrissage au sol
+local bhopLandToken: { [Player]: number } = {} -- incrémenté à chaque atterrissage (invalide les anciennes fenêtres)
+local bhopChainUsed: { [Player]: number } = {} -- dernier landToken pour lequel un saut valide a déjà été compté
+local bhopLastPress: { [Player]: number } = {} -- anti-spam sur BhopJumpPressed
+
+-- Capacités actives du clown (réservées aux joueurs infectés). Équilibrage : dash = mobilité
+-- courte et fréquente (relance la chasse après un raté), vision = forte info mais rare (évite
+-- que ce soit systématiquement la meilleure option face au sprint/à la glissade classiques).
+--
+-- Dash : ruée courte dans la direction visée, vitesse imposée (même principe que la glissade,
+-- décélération en racine carrée vers BASE_WALK_SPEED) mais sans changement de hitbox — c'est une
+-- impulsion de mobilité, pas une façon de passer sous des obstacles.
+local DASH_SPEED      = 46  -- studs/s au pic, nettement au-dessus du sprint pour un vrai "gap closer"
+local DASH_DURATION   = 1.2 -- s (x2 : la distance parcourue double avec, vitesse inchangée)
+local DASH_COOLDOWN   = 6.0 -- s
+local DASH_WALK_SPEED = 4   -- pendant le dash : le contrôle normal du joueur pèse peu face à la
+-- vélocité de dash qu'on impose nous-mêmes (évite l'impression de "montée en vitesse" progressive).
+
+-- Vision : révèle la position des survivants (Highlight visible à travers les murs, mais UNIQUEMENT
+-- côté client du clown — créé par son propre LocalScript, jamais répliqué aux autres joueurs) le
+-- temps de VISION_DURATION. Cooldown long : c'est une info très forte (position temps réel de tout
+-- le monde), pas un outil à spammer comme le dash.
+local VISION_DURATION = 2.5  -- s
+local VISION_COOLDOWN = 35.0 -- s
+
+local dashing: { [Player]: any } = {} -- { direction, startTime }
+local lastDashUse: { [Player]: number } = {}
+local lastVisionUse: { [Player]: number } = {}
+
+-- ===== Anti-triche : centralisation des états de déplacement + validation de vitesse =====
+-- Un seul point de vérité pour "dans quel état de déplacement est ce joueur", réutilisé à la
+-- fois pour la priorité de WalkSpeed (stepStamina, plus bas) et pour le plafond de vitesse
+-- légitime (anti speed-hack, même fonction). Diffusé au client concerné (MovementStateChanged)
+-- pour qu'il ait, lui aussi, une machine à états propre plutôt que de deviner localement.
+local function getMovementState(player: Player): string
+	if dashing[player] then return "dash" end
+	if sliding[player] then return "slide" end
+	if prone[player] then return "prone" end
+
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		local humState = hum:GetState()
+		if humState == Enum.HumanoidStateType.Freefall or humState == Enum.HumanoidStateType.Jumping then
+			return "air"
+		end
+		if hum.MoveDirection.Magnitude > 0.1 then
+			return "run"
+		end
+	end
+	return "idle"
+end
+
+-- Vitesse horizontale MAX légitime par état, avec une marge de tolérance (latence réseau,
+-- arrondis physiques, petites pentes...) pour éviter les faux-positifs. Au-delà, c'est un
+-- speed-hack potentiel : la vélocité horizontale est ramenée au plafond (composante verticale
+-- intacte, pour ne pas casser sauts/chutes).
+local SPEED_TOLERANCE = 1.35
+local STATE_MAX_SPEED = {
+	idle  = BASE_WALK_SPEED,
+	run   = math.max(SPRINT_WALK_SPEED, BHOP_MAX_SPEED),
+	slide = SLIDE_INITIAL_SPEED,
+	prone = PRONE_WALK_SPEED,
+	air   = math.max(SPRINT_WALK_SPEED, BHOP_MAX_SPEED, DASH_SPEED),
+	dash  = DASH_SPEED,
+}
+
+local lastBroadcastState: { [Player]: string } = {}
 
 -- Cri périodique des survivants (pas les clowns) : aide les clowns à les repérer au son
 -- (audio positionnel — Sound parenté au HumanoidRootPart, atténué avec la distance).
@@ -762,33 +879,84 @@ local function stepStamina(dt: number)
 		if eliminated[player] then continue end
 		local char = player.Character
 		local hum = char and char:FindFirstChildOfClass("Humanoid")
-		if not hum then continue end
+		local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if not hum or not hrp then continue end
 
 		local current = stamina[player] or MAX_STAMINA
 		if sprinting[player] then
 			current = math.max(0, current - STAMINA_DRAIN_PER_SEC * dt)
+			lastStaminaUse[player] = now
 			if current <= 0 then
 				sprinting[player] = false
-				exhaustedUntil[player] = now + EXHAUSTION_DURATION
+				staminaDepleted[player] = true
 			end
-		else
-			current = math.min(MAX_STAMINA, current + STAMINA_REGEN_PER_SEC * dt)
+		elseif now - (lastStaminaUse[player] or -math.huge) >= STAMINA_REGEN_DELAY then
+			-- Petite pause avant la recharge après une dernière consommation (sprint ou glissade) :
+			-- plus réaliste qu'une reprise instantanée dès qu'on relâche Shift.
+			local regenRate = staminaDepleted[player] and STAMINA_REGEN_PER_SEC_DEPLETED or STAMINA_REGEN_PER_SEC
+			current = math.min(MAX_STAMINA, current + regenRate * dt)
+			if current >= MAX_STAMINA then
+				staminaDepleted[player] = false -- jauge pleine : sprint/glissade/saut/couché de nouveau autorisés
+			end
 		end
 		stamina[player] = current
 
-		local isExhausted = exhaustedUntil[player] and now < exhaustedUntil[player]
-		if sliding[player] then
+		-- Épuisement total : ni sauter ni se coucher tant que la jauge n'est pas remontée à 100%
+		-- (SetStateEnabled bloque le saut quel que soit l'input, PC comme mobile).
+		hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, not staminaDepleted[player])
+
+		if dashing[player] then
+			-- Même principe que la glissade : la vélocité du dash est imposée directement par
+			-- stepDashes() ; sans réduire le WalkSpeed ici, le contrôleur de mouvement normal du
+			-- Humanoid (qui vise en permanence WalkSpeed dans la direction des touches) rentre en
+			-- conflit avec la vélocité imposée et donne l'impression d'une "accélération
+			-- progressive" au lieu d'un démarrage net à pleine vitesse.
+			hum.WalkSpeed = DASH_WALK_SPEED
+		elseif sliding[player] then
 			-- La vélocité de glissade est imposée directement par stepSlides() ; on réduit juste
 			-- le WalkSpeed pour que le contrôle normal du joueur n'aille pas à l'encontre.
 			hum.WalkSpeed = SLIDE_WALK_SPEED
-		elseif isExhausted then
+		elseif prone[player] then
+			-- Posture couchée persistante : rampe lentement, prioritaire sur l'épuisement (déjà
+			-- volontairement lent, pas besoin d'empiler les pénalités).
+			hum.WalkSpeed = PRONE_WALK_SPEED
+		elseif staminaDepleted[player] then
 			hum.WalkSpeed = EXHAUSTED_WALK_SPEED
 		else
-			hum.WalkSpeed = sprinting[player] and SPRINT_WALK_SPEED or BASE_WALK_SPEED
+			-- Bunny hop : si une chaîne de sauts bien enchaînés a construit un bonus, il prend le
+			-- dessus sur la vitesse de course/sprint normale (jamais en dessous, seulement au-dessus).
+			local baseSpeed = sprinting[player] and SPRINT_WALK_SPEED or BASE_WALK_SPEED
+			hum.WalkSpeed = math.max(baseSpeed, bhopBoost[player] or 0)
 		end
 
 		if shouldBroadcast then
-			staminaUpdateEvent:FireClient(player, current / MAX_STAMINA)
+			staminaUpdateEvent:FireClient(player, current / MAX_STAMINA, staminaDepleted[player] or false)
+		end
+
+		-- ===== Anti-triche : état centralisé + validation de vitesse =====
+		local movementState = getMovementState(player)
+		if lastBroadcastState[player] ~= movementState then
+			lastBroadcastState[player] = movementState
+			movementStateEvent:FireClient(player, movementState)
+		end
+
+		-- Ragdoll/knockback (PlatformStand) : vélocité imposée intentionnellement très haute,
+		-- on ne valide pas pendant ce court instant pour ne pas annuler l'effet lui-même.
+		if not hum.PlatformStand then
+			local maxSpeed = (STATE_MAX_SPEED[movementState] or BASE_WALK_SPEED) * SPEED_TOLERANCE
+			local horizontalVelocity = Vector3.new(hrp.AssemblyLinearVelocity.X, 0, hrp.AssemblyLinearVelocity.Z)
+			local speed = horizontalVelocity.Magnitude
+
+			if speed > maxSpeed then
+				-- Vitesse anormale (speed-hack potentiel) : on ramène la vélocité horizontale au
+				-- plafond légitime pour cet état, sans toucher à la composante verticale (saut/chute).
+				local clamped = horizontalVelocity.Unit * maxSpeed
+				hrp.AssemblyLinearVelocity = Vector3.new(clamped.X, hrp.AssemblyLinearVelocity.Y, clamped.Z)
+				warn(string.format(
+					"[Anti-triche] Vitesse anormale corrigée pour %s : %.1f > %.1f studs/s (état=%s)",
+					player.Name, speed, maxSpeed, movementState
+				))
+			end
 		end
 	end
 end
@@ -809,12 +977,61 @@ local function endSlide(player: Player)
 	end
 end
 
--- Fait avancer les glissades en cours : vélocité horizontale imposée, qui décroît linéairement
--- (friction constante, décélération réaliste) jusqu'à l'arrêt, puis restaure la hitbox normale.
-local function stepSlides()
+-- Relève un joueur couché : restaure la hitbox normale (HipHeight + BodyHeightScale).
+local function standUp(player: Player)
+	local data = prone[player]
+	if not data then return end
+	prone[player] = nil
+
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.HipHeight = data.originalHipHeight
+	end
+	if data.bodyHeightScale and data.bodyHeightScale.Parent then
+		data.bodyHeightScale.Value = data.originalBodyHeightScale
+	end
+end
+
+-- Couche un joueur : abaisse vraiment la hitbox (comme la glissade) mais de façon persistante,
+-- jusqu'à ce qu'il se relève (toggle) ou soit contaminé/éliminé.
+local function goProne(player: Player)
+	if prone[player] then return end -- déjà couché
+
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum then return end
+
+	local bodyHeightScale = hum:FindFirstChild("BodyHeightScale")
+	local originalHipHeight = hum.HipHeight
+	local originalBodyHeightScale = bodyHeightScale and bodyHeightScale.Value
+
+	hum.HipHeight = originalHipHeight * PRONE_HIP_HEIGHT_FACTOR
+	if bodyHeightScale then
+		bodyHeightScale.Value = originalBodyHeightScale * PRONE_BODY_HEIGHT_SCALE
+	end
+
+	prone[player] = {
+		originalHipHeight = originalHipHeight,
+		bodyHeightScale = bodyHeightScale,
+		originalBodyHeightScale = originalBodyHeightScale,
+	}
+	sprinting[player] = false -- ne peut pas sprinter couché
+end
+
+-- Léger pilotage pendant la glissade : même principe que le dash (voir DASH_TURN_RATE) — la
+-- direction suit progressivement les touches tenues au lieu de rester figée sur l'instant de
+-- départ, sans que ça devienne un contrôle total façon marche normale.
+local SLIDE_TURN_RATE = 6.0
+
+-- Fait avancer les glissades en cours : vélocité horizontale imposée à vitesse quasi constante
+-- pendant SLIDE_HOLD_DURATION (le vrai "boost" de la glissade), puis décélération linéaire
+-- (friction constante) jusqu'à l'arrêt, puis restaure la hitbox normale.
+local function stepSlides(dt: number)
 	local now = os.clock()
 	for player, data in sliding do
 		local char = player.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
 		local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
 		if not hrp or not char.Parent then
 			sliding[player] = nil
@@ -827,7 +1044,76 @@ local function stepSlides()
 			continue
 		end
 
-		local speed = SLIDE_INITIAL_SPEED * (1 - elapsed / SLIDE_DURATION)
+		if hum then
+			local moveDir = Vector3.new(hum.MoveDirection.X, 0, hum.MoveDirection.Z)
+			if moveDir.Magnitude > 0.1 then
+				local alpha = math.clamp(SLIDE_TURN_RATE * dt, 0, 1)
+				data.direction = data.direction:Lerp(moveDir.Unit, alpha).Unit
+			end
+		end
+
+		local speed
+		if elapsed < SLIDE_HOLD_DURATION then
+			speed = SLIDE_INITIAL_SPEED
+		else
+			local decelElapsed  = elapsed - SLIDE_HOLD_DURATION
+			local decelDuration = SLIDE_DURATION - SLIDE_HOLD_DURATION
+			-- Racine carrée plutôt que linéaire : la vitesse reste haute la majeure partie de la
+			-- décélération puis chute net juste avant l'arrêt (fin nette, pas de "rampe" lente où
+			-- on a l'impression de ne plus contrôler son perso).
+			-- On décélère jusqu'à BASE_WALK_SPEED (pas jusqu'à 0) : à la fin de la glissade, le
+			-- relais avec le déplacement normal (WalkSpeed) se fait sans à-coup — sinon la vélocité
+			-- imposée tombait à 0 puis le perso "repartait" d'un coup à 16 studs/s, pas fluide.
+			local decelRatio = math.sqrt(math.max(0, 1 - decelElapsed / decelDuration))
+			speed = BASE_WALK_SPEED + (SLIDE_INITIAL_SPEED - BASE_WALK_SPEED) * decelRatio
+		end
+
+		local currentVelocity = hrp.AssemblyLinearVelocity
+		hrp.AssemblyLinearVelocity = Vector3.new(
+			data.direction.X * speed,
+			currentVelocity.Y,
+			data.direction.Z * speed
+		)
+	end
+end
+
+-- Léger pilotage pendant le dash : plus haut = la direction suit plus vite les touches tenues.
+-- L'élan du dash reste dominant (ce n'est pas un contrôle total façon marche normale), mais
+-- tenir Q/D par exemple fait légèrement courber la trajectoire au lieu de rester figée tout du
+-- long sur la direction du tout premier instant.
+local DASH_TURN_RATE = 6.0
+
+-- Fait avancer les dashs en cours : même principe que la glissade (vélocité imposée, décélération
+-- en racine carrée vers BASE_WALK_SPEED pour un relais fluide), mais sans changement de hitbox —
+-- c'est une capacité de mobilité pour le clown, pas un moyen de passer sous des obstacles.
+local function stepDashes(dt: number)
+	local now = os.clock()
+	for player, data in dashing do
+		local char = player.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if not hrp or not char.Parent then
+			dashing[player] = nil
+			continue
+		end
+
+		local elapsed = now - data.startTime
+		if elapsed >= DASH_DURATION then
+			dashing[player] = nil
+			continue
+		end
+
+		if hum then
+			local moveDir = Vector3.new(hum.MoveDirection.X, 0, hum.MoveDirection.Z)
+			if moveDir.Magnitude > 0.1 then
+				local alpha = math.clamp(DASH_TURN_RATE * dt, 0, 1)
+				data.direction = data.direction:Lerp(moveDir.Unit, alpha).Unit
+			end
+		end
+
+		local decelRatio = math.sqrt(math.max(0, 1 - elapsed / DASH_DURATION))
+		local speed = BASE_WALK_SPEED + (DASH_SPEED - BASE_WALK_SPEED) * decelRatio
+
 		local currentVelocity = hrp.AssemblyLinearVelocity
 		hrp.AssemblyLinearVelocity = Vector3.new(
 			data.direction.X * speed,
@@ -855,25 +1141,31 @@ end
 -- Recompte les joueurs encore présents (certains ont pu se déconnecter en cours de round)
 -- et en déduit le plafond de clowns du moment. Coût négligeable : une boucle sur la poignée
 -- de participants du round, appelée seulement lors d'un coup de batte (pas chaque frame).
-local function computeMaxClowns(activeClownCount: number): number
+local function computeMaxClowns(): number
 	local activePlayers = 0
 	for player in participants do
 		if player.Parent then
 			activePlayers += 1
 		end
 	end
-	return math.max(activeClownCount + 1, math.ceil(activePlayers * CLOWN_CAP_RATIO))
+	-- Plancher fixe à 2 (pas "activeClownCount + 1" : ce terme grandissait avec le nombre de
+	-- clowns déjà présents, ce qui annulait le plafond — la contamination ne s'arrêtait jamais).
+	-- Le plancher sert uniquement à permettre la toute première contamination dans les petites
+	-- parties où 40% des joueurs arrondirait à moins de 2.
+	return math.max(2, math.ceil(activePlayers * CLOWN_CAP_RATIO))
 end
 
 -- Élimine un joueur (plafond de clowns atteint) : il sort de la partie au lieu d'être contaminé.
 local function eliminatePlayer(player: Player, knockbackDir: Vector3?)
 	if eliminated[player] or infected[player] then return end
 	eliminated[player] = true
+	standUp(player) -- un éliminé n'est plus un survivant : force le relevé s'il était couché
 	if knockbackDir then
 		applyKnockbackWithHitStop(player, knockbackDir)
 	end
 	applyEliminatedLook(player)
 	tauntAvailableEvent:FireClient(player, false) -- plus dans la partie, plus de bouton taunt
+	proneAvailableEvent:FireClient(player, false) -- plus dans la partie, plus de bouton se coucher
 	GameStatus:FireClient(player, { kind = "banner", text = "💀 Trop de clowns dans le parc, tu es éliminé !" })
 end
 
@@ -883,18 +1175,22 @@ local function infectPlayer(player: Player, knockbackDir: Vector3?): boolean
 	if infected[player] or eliminated[player] then return false end
 
 	local activeClowns = countActiveClowns()
-	if activeClowns >= computeMaxClowns(activeClowns) then
+	if activeClowns >= computeMaxClowns() then
 		eliminatePlayer(player, knockbackDir)
 		return false
 	end
 
 	infected[player] = true
+	standUp(player) -- un clown n'est plus un survivant : force le relevé s'il était couché
 	applyInfectedLook(player)
 	if knockbackDir then
 		applyKnockbackWithHitStop(player, knockbackDir)
 	end
 	grantWeapon(player)
 	tauntAvailableEvent:FireClient(player, false) -- le bouton taunt est réservé aux non-clowns
+	proneAvailableEvent:FireClient(player, false) -- se coucher est réservé aux non-clowns
+	dashAvailableEvent:FireClient(player, true)   -- capacités actives réservées AUX clowns
+	visionAvailableEvent:FireClient(player, true)
 	GameStatus:FireClient(player, { kind = "banner", text = "🤡 Tu es devenu un CLOWN ! Chasse les autres enfants !" })
 	return true
 end
@@ -945,7 +1241,9 @@ end
 function ClownSurvival.Start(ctx)
 	participants, infected, eliminated, originalClowns, lastSwing, lastTaunt, connections = {}, {}, {}, {}, {}, {}, {}
 	comboCount, comboLastHit = {}, {}
-	stamina, sprinting, exhaustedUntil, sliding, lastSprintStart = {}, {}, {}, {}, {}
+	stamina, sprinting, sliding, lastSprintStart, staminaDepleted, prone, lastStaminaUse = {}, {}, {}, {}, {}, {}, {}
+	bhopBoost, bhopLastLand, bhopLandToken, bhopChainUsed, bhopLastPress = {}, {}, {}, {}, {}
+	dashing, lastDashUse, lastVisionUse, lastBroadcastState = {}, {}, {}, {}
 	running = true
 	settings = ctx.Settings or ClownSurvival.DefaultSettings
 	roundId += 1
@@ -954,6 +1252,29 @@ function ClownSurvival.Start(ctx)
 		participants[player] = true
 		stamina[player] = MAX_STAMINA
 		sprinting[player] = false
+
+		-- Bunny hop : détecte l'atterrissage (physique, fiable) via le Humanoid ; ouvre une fenêtre
+		-- de BHOP_LANDING_WINDOW pendant laquelle un VRAI ré-appui de saut (BhopJumpPressed, voir
+		-- plus bas) enchaîne le bonus. Si la fenêtre expire sans ré-appui valide, la chaîne casse.
+		local char = player.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if hum then
+			local stateConn = hum.StateChanged:Connect(function(_, new)
+				if new == Enum.HumanoidStateType.Landed then
+					bhopLastLand[player] = os.clock()
+					bhopLandToken[player] = (bhopLandToken[player] or 0) + 1
+					local myLandToken = bhopLandToken[player]
+					task.delay(BHOP_LANDING_WINDOW, function()
+						-- Toujours la fenêtre la plus récente, et aucun saut valide compté dedans :
+						-- personne n'a enchaîné à temps, la chaîne s'arrête (et donc le bonus retombe).
+						if bhopLandToken[player] == myLandToken and bhopChainUsed[player] ~= myLandToken then
+							bhopBoost[player] = 0
+						end
+					end)
+				end
+			end)
+			table.insert(connections, stateConn)
+		end
 	end
 
 	applyDarkAtmosphere()
@@ -968,16 +1289,19 @@ function ClownSurvival.Start(ctx)
 			originalClowns[chosen] = true
 			applyInfectedLook(chosen)
 			grantWeapon(chosen)
+			dashAvailableEvent:FireClient(chosen, true)
+			visionAvailableEvent:FireClient(chosen, true)
 			GameStatus:FireClient(chosen, { kind = "banner", text = "🤡 Tu es LE CLOWN ! Chasse les enfants à la batte !" })
 		end
 	end
 
 	GameStatus:FireAllClients({ kind = "banner", text = "🎪 LE CLOWN DE NUIT — fuyez avant d'être frappé !" })
 
-	-- Le bouton taunt n'est visible que pour les survivants (pas les clowns de départ)
+	-- Le bouton taunt/se coucher n'est visible que pour les survivants (pas les clowns de départ)
 	for _, player in ctx.Players do
 		if not infected[player] then
 			tauntAvailableEvent:FireClient(player, true)
+			proneAvailableEvent:FireClient(player, true)
 		end
 	end
 
@@ -998,8 +1322,9 @@ function ClownSurvival.Start(ctx)
 		if not running or not participants[player] or eliminated[player] then return end
 		if typeof(wantsSprint) ~= "boolean" then return end
 		if wantsSprint then
+			if prone[player] then return end -- pas de sprint en étant couché
 			if (stamina[player] or 0) <= 0 then return end
-			if exhaustedUntil[player] and os.clock() < exhaustedUntil[player] then return end
+			if staminaDepleted[player] then return end -- jauge déjà vidée : bloqué jusqu'à 100%
 			if not sprinting[player] then
 				lastSprintStart[player] = os.clock() -- démarre la fenêtre de tolérance pour la glissade
 			end
@@ -1011,22 +1336,89 @@ function ClownSurvival.Start(ctx)
 	local slideStepConn = RunService.Heartbeat:Connect(stepSlides)
 	table.insert(connections, slideStepConn)
 
-	-- Écoute les demandes de glissade : possible en plein sprint, ou juste après (fenêtre de
-	-- tolérance) — pas besoin de tenir Shift ET Ctrl exactement en même temps.
-	local slideConn = slideEvent.OnServerEvent:Connect(function(player)
-		if not running or not participants[player] or eliminated[player] then return end
-		if sliding[player] then return end -- déjà en cours
+	local dashStepConn = RunService.Heartbeat:Connect(stepDashes)
+	table.insert(connections, dashStepConn)
 
-		local recentlySprinted = lastSprintStart[player] and (os.clock() - lastSprintStart[player]) <= SLIDE_GRACE_WINDOW
-		if not sprinting[player] and not recentlySprinted then return end
-		if (stamina[player] or 0) < SLIDE_STAMINA_COST then return end
+	-- Écoute les demandes de dash (réservé au clown) : cooldown côté serveur, direction envoyée
+	-- par le client (LookVector caméra, même pattern que le coup de batte).
+	-- Direction du dash = direction du JOUEUR (mouvement en cours, sinon orientation du
+	-- personnage), pas la caméra — même logique que la glissade, pour un dash qui va toujours
+	-- "devant le perso" plutôt que vers où le joueur regarde à la souris.
+	local dashConn = dashRequestEvent.OnServerEvent:Connect(function(player)
+		if not running or not participants[player] then return end
+		if not infected[player] or eliminated[player] then return end -- réservé au clown
+
+		local now = os.clock()
+		if lastDashUse[player] and (now - lastDashUse[player]) < DASH_COOLDOWN then return end
 
 		local char = player.Character
 		local hum = char and char:FindFirstChildOfClass("Humanoid")
 		local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
 		if not hum or not hrp then return end
 
-		stamina[player] = (stamina[player] or MAX_STAMINA) - SLIDE_STAMINA_COST
+		local direction = hum.MoveDirection
+		if direction.Magnitude < 0.1 then
+			direction = hrp.CFrame.LookVector
+		end
+		direction = Vector3.new(direction.X, 0, direction.Z)
+		if direction.Magnitude < 0.01 then
+			direction = hrp.CFrame.LookVector
+		end
+		direction = Vector3.new(direction.X, 0, direction.Z)
+		if direction.Magnitude < 0.01 then return end -- garde-fou NaN/inf
+		direction = direction.Unit
+
+		lastDashUse[player] = now
+		dashing[player] = { direction = direction, startTime = now }
+
+		cameraShakeEvent:FireClient(player, 0.7) -- feedback : sensation d'impulsion pour le clown
+		dashPerformedEvent:FireAllClients(player) -- feedback visuel (traînée) vu par tout le monde
+	end)
+	table.insert(connections, dashConn)
+
+	-- Écoute les demandes de vision (réservé au clown) : cooldown côté serveur, la révélation
+	-- elle-même (Highlight sur les survivants) est entièrement gérée côté client du clown pour
+	-- qu'elle ne soit visible que par lui — le serveur ne fait qu'autoriser/refuser.
+	local visionConn = visionRequestEvent.OnServerEvent:Connect(function(player)
+		if not running or not participants[player] then return end
+		if not infected[player] or eliminated[player] then return end -- réservé au clown
+
+		local now = os.clock()
+		if lastVisionUse[player] and (now - lastVisionUse[player]) < VISION_COOLDOWN then return end
+		lastVisionUse[player] = now
+
+		visionGrantedEvent:FireClient(player, VISION_DURATION)
+	end)
+	table.insert(connections, visionConn)
+
+	-- Écoute les demandes de glissade : possible en plein sprint, ou juste après (fenêtre de
+	-- tolérance) — pas besoin de tenir Shift ET Ctrl exactement en même temps.
+	local slideConn = slideEvent.OnServerEvent:Connect(function(player)
+		if not running or not participants[player] or eliminated[player] then return end
+		if sliding[player] then return end -- déjà en cours
+		if prone[player] then return end -- pas de glissade en étant couché
+
+		local recentlySprinted = lastSprintStart[player] and (os.clock() - lastSprintStart[player]) <= SLIDE_GRACE_WINDOW
+		if not sprinting[player] and not recentlySprinted then return end
+
+		local currentStamina = stamina[player] or MAX_STAMINA
+		if currentStamina <= 0 then return end -- plus aucune stamina : glissade impossible
+		if staminaDepleted[player] then return end -- jauge déjà vidée : bloqué jusqu'à 100%
+
+		local char = player.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if not hum or not hrp then return end
+
+		if currentStamina < SLIDE_STAMINA_COST then
+			-- Pas assez de stamina pour le coût normal : la glissade reste autorisée mais vide
+			-- totalement la jauge, ce qui déclenche l'épuisement (comme un sprint qui a tout brûlé).
+			stamina[player] = 0
+			staminaDepleted[player] = true
+		else
+			stamina[player] = currentStamina - SLIDE_STAMINA_COST
+		end
+		lastStaminaUse[player] = os.clock()
 		sprinting[player] = false -- on ne sprinte plus, on glisse
 
 		local direction = hum.MoveDirection
@@ -1057,6 +1449,51 @@ function ClownSurvival.Start(ctx)
 		}
 	end)
 	table.insert(connections, slideConn)
+
+	-- Écoute les appuis de saut (front montant réel, voir commentaire sur les tables bhop plus
+	-- haut) pour juger si le bunny hop s'enchaîne dans la fenêtre après l'atterrissage.
+	local bhopConn = bhopJumpEvent.OnServerEvent:Connect(function(player)
+		if not running or not participants[player] then return end
+
+		local now = os.clock()
+		if bhopLastPress[player] and (now - bhopLastPress[player]) < BHOP_PRESS_DEBOUNCE then return end
+		bhopLastPress[player] = now
+
+		local lastLand = bhopLastLand[player]
+		if lastLand and (now - lastLand) <= BHOP_LANDING_WINDOW then
+			bhopBoost[player] = math.min(BHOP_MAX_SPEED, (bhopBoost[player] or 0) + BHOP_SPEED_BONUS_PER_HOP)
+			bhopChainUsed[player] = bhopLandToken[player] -- cette fenêtre est "consommée", pas de reset au timeout
+		else
+			bhopBoost[player] = 0 -- saut mal timé (ou premier saut sans atterrissage récent) : la chaîne casse
+		end
+	end)
+	table.insert(connections, bhopConn)
+
+	-- Écoute les demandes de bascule "se coucher" : réservé aux survivants (pas aux clowns), pas
+	-- pendant une glissade en cours ni pendant l'épuisement (le serveur reste seul juge). Renvoie
+	-- systématiquement l'état RÉEL au client (ProneState) : sans ça, le bouton pouvait afficher
+	-- "SE RELEVER" après un appui refusé par le serveur (ex. épuisé) alors que le perso ne bouge pas.
+	local proneConn = proneEvent.OnServerEvent:Connect(function(player)
+		if not running or not participants[player] then return end
+		if infected[player] or eliminated[player] then return end -- réservé aux survivants
+		if sliding[player] then
+			proneStateEvent:FireClient(player, prone[player] ~= nil)
+			return
+		end
+
+		if prone[player] then
+			standUp(player)
+		elseif staminaDepleted[player] then
+			-- Refusé (épuisé) : on ne fait rien, mais on confirme quand même l'état réel (toujours
+			-- "debout" ici) pour resynchroniser le bouton du client qui a basculé de manière optimiste.
+			proneStateEvent:FireClient(player, false)
+			return
+		else
+			goProne(player)
+		end
+		proneStateEvent:FireClient(player, prone[player] ~= nil)
+	end)
+	table.insert(connections, proneConn)
 
 	-- Écoute les taunts (réservés aux survivants, pas aux clowns) — pas de message banner, juste
 	-- le rire joué en positionnel par le serveur (entendu par les proches, clowns compris).
@@ -1186,9 +1623,20 @@ function ClownSurvival.OnPlayerRemoving(player)
 	comboLastHit[player] = nil
 	stamina[player] = nil
 	sprinting[player] = nil
-	exhaustedUntil[player] = nil
 	sliding[player] = nil
 	lastSprintStart[player] = nil
+	staminaDepleted[player] = nil
+	lastStaminaUse[player] = nil
+	prone[player] = nil
+	bhopBoost[player] = nil
+	bhopLastLand[player] = nil
+	bhopLandToken[player] = nil
+	bhopChainUsed[player] = nil
+	bhopLastPress[player] = nil
+	dashing[player] = nil
+	lastDashUse[player] = nil
+	lastVisionUse[player] = nil
+	lastBroadcastState[player] = nil
 end
 
 function ClownSurvival.Stop()
@@ -1204,6 +1652,7 @@ function ClownSurvival.Stop()
 		removeEliminatedLook(player)
 		unequipBat(player)
 		endSlide(player) -- restaure HipHeight/BodyHeightScale si le joueur glissait encore
+		standUp(player) -- restaure HipHeight/BodyHeightScale si le joueur était encore couché
 		local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 		if hum then
 			hum.PlatformStand = false
@@ -1213,12 +1662,17 @@ function ClownSurvival.Stop()
 
 	setActiveEvent:FireAllClients(false)
 	tauntAvailableEvent:FireAllClients(false)
+	proneAvailableEvent:FireAllClients(false)
 	sprintAvailableEvent:FireAllClients(false)
+	dashAvailableEvent:FireAllClients(false)
+	visionAvailableEvent:FireAllClients(false)
 	restoreAtmosphere()
 
 	participants, infected, eliminated, originalClowns, lastSwing, lastTaunt, batRigs = {}, {}, {}, {}, {}, {}, {}
 	comboCount, comboLastHit = {}, {}
-	stamina, sprinting, exhaustedUntil, sliding, lastSprintStart = {}, {}, {}, {}, {}
+	stamina, sprinting, sliding, lastSprintStart, staminaDepleted, prone, lastStaminaUse = {}, {}, {}, {}, {}, {}, {}
+	bhopBoost, bhopLastLand, bhopLandToken, bhopChainUsed, bhopLastPress = {}, {}, {}, {}, {}
+	dashing, lastDashUse, lastVisionUse, lastBroadcastState = {}, {}, {}, {}
 end
 
 return ClownSurvival
