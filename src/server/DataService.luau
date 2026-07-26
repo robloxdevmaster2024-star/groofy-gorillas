@@ -21,6 +21,7 @@ local ProfileStoreModule = require(script.Parent.ProfileStore)
 local PlayerConfig = require(
 	ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("PlayerConfig")
 )
+local WeekId             = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("WeekId"))
 local LeaderboardService = require(script.Parent.LeaderboardService)
 local AchievementService = require(script.Parent.AchievementService)
 
@@ -43,6 +44,15 @@ local TEMPLATE = {
 		clownWins       = 0,  -- Clown Survival : victoires en tant que clown
 		survivorWins    = 0,  -- Clown Survival : victoires en tant qu'enfant
 		totalClownKills = 0,  -- Clown Survival : coups réussis (contamination OU élimination) en tant que clown, tous rounds confondus
+		-- Compteurs de la semaine ISO en cours (voir shared/WeekId.luau), pour les classements
+		-- hebdomadaires. Remis à zéro paresseusement (DataService.EnsureCurrentWeek) dès que
+		-- `weekId` ne correspond plus à la semaine ISO courante — pas de tâche planifiée à part.
+		weekly = {
+			weekId     = "",
+			gp         = 0,
+			wins       = 0,
+			bestStreak = 0,
+		},
 	},
 	settings = {
 		musicVolume = 0.5,
@@ -125,6 +135,24 @@ function DataService.GetLevel(player)
 	return profile and profile.Data.level or 1
 end
 
+-- Reset paresseux des compteurs hebdomadaires si la semaine ISO a changé depuis la dernière
+-- action de ce joueur (voir shared/WeekId.luau). Retourne la table `weekly` à jour, prête à être
+-- lue/mutée directement par l'appelant (même pattern que `profile.stats` ailleurs dans le code :
+-- RoundRunner mute déjà `profile.stats` sans passer par un setter dédié).
+function DataService.EnsureCurrentWeek(player)
+	local profile = profiles[player]
+	if not profile then return nil end
+	local weekly = profile.Data.stats.weekly
+	local currentWeek = WeekId.Current()
+	if weekly.weekId ~= currentWeek then
+		weekly.weekId     = currentWeek
+		weekly.gp         = 0
+		weekly.wins       = 0
+		weekly.bestStreak = 0
+	end
+	return weekly
+end
+
 function DataService.GetNextThreshold(player)
 	local profile = profiles[player]
 	if not profile then return nil end
@@ -187,7 +215,14 @@ function DataService.AddGoofyPoints(player, amount)
 	data.level      = newLevel
 
 	syncLeaderstats(player, data)
-	LeaderboardService.UpdateScore(player.UserId, data.goofyPoints)
+	LeaderboardService.UpdateScore("gp", "alltime", player.UserId, data.goofyPoints)
+
+	local weekly = DataService.EnsureCurrentWeek(player)
+	if weekly then
+		weekly.gp = math.max(0, weekly.gp + amount)
+		LeaderboardService.UpdateScore("gp", "weekly", player.UserId, weekly.gp)
+	end
+
 	AchievementService.Check(player, data, "gp_change")
 
 	DataUpdated:FireClient(player, {
@@ -243,7 +278,26 @@ local function onPlayerAdded(player: Player)
 
 	profiles[player] = profile
 	syncLeaderstats(player, profile.Data)
-	LeaderboardService.UpdateScore(player.UserId, profile.Data.goofyPoints)
+
+	-- Resynchronise tous les classements au chargement (pas seulement GP) : couvre le cas où le
+	-- joueur revient après un changement de semaine ISO pendant qu'il était déconnecté (le
+	-- prochain gain/victoire l'aurait fait de toute façon, mais autant ne pas attendre).
+	local stats = profile.Data.stats
+	LeaderboardService.UpdateScore("gp", "alltime", player.UserId, profile.Data.goofyPoints)
+	LeaderboardService.UpdateScore("wins", "alltime", player.UserId, stats.gamesWon)
+	local bestStreakOverall = 0
+	for _, streak in stats.bestStreaks do
+		bestStreakOverall = math.max(bestStreakOverall, streak)
+	end
+	LeaderboardService.UpdateScore("streak", "alltime", player.UserId, bestStreakOverall)
+
+	local weekly = DataService.EnsureCurrentWeek(player)
+	if weekly then
+		LeaderboardService.UpdateScore("gp", "weekly", player.UserId, weekly.gp)
+		LeaderboardService.UpdateScore("wins", "weekly", player.UserId, weekly.wins)
+		LeaderboardService.UpdateScore("streak", "weekly", player.UserId, weekly.bestStreak)
+	end
+
 	DataUpdated:FireClient(player, {
 		goofyPoints = profile.Data.goofyPoints,
 		level       = profile.Data.level,

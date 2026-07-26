@@ -11,6 +11,7 @@ local localPlayer = Players.LocalPlayer
 local AchievementsConfig = require(
 	ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("AchievementsConfig")
 )
+local UISound = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("UISound"))
 
 local eventsFolder  = ReplicatedStorage:WaitForChild("AchievementEvents")
 local unlockEvent   = eventsFolder:WaitForChild("Unlock")
@@ -55,6 +56,8 @@ local function removeToast(toast: Frame)
 end
 
 local function spawnToast(def)
+	UISound.PlayNotify()
+
 	-- Décale les toasts existants vers le haut
 	for j, t in activeToasts do
 		local targetY = -(TOAST_H + TOAST_GAP) * (j + 1)

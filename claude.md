@@ -173,7 +173,7 @@ Boucle de jeu minimale **fonctionnelle et testée** :
 ➡️ **La roadmap complète et l'avancement vivent dans [`docs/ROADMAP.md`](docs/ROADMAP.md).**
 Ne pas dupliquer les étapes ici : ce fichier reste l'unique source de vérité. La consulter en début de session (cf. encadré tout en haut) pour connaître la phase en cours et la prochaine tâche.
 
-**Prochaine tâche prévue :** DataService (Goofy Points + niveaux via ProfileStore) — Phase 1.
+**Prochaine tâche prévue :** Phase 6 — UI complète, suite (menu principal à onglets, HUD in-game consolidé, notifications & juice, direction artistique). L'écran de fin de partie (1ᵉʳ chantier de cette phase) est fait. Voir aussi les chantiers en pause à reprendre : bunny hop, animation manuelle du swing de batte, matchmaking cross-serveur, décision cosmétiques (bloque Boutique/Inventaire + système de niveaux/récompenses).
 
 ---
 

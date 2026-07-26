@@ -36,9 +36,9 @@ local timer = Instance.new("TextLabel")
 timer.AnchorPoint = Vector2.new(1, 0)
 timer.Position = UDim2.new(1, -16, 0, 74)
 timer.Size = UDim2.new(0, 120, 0, 44)
-timer.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
-timer.BackgroundTransparency = 0.25
+timer.BackgroundTransparency = 1 -- pas de rectangle de fond, juste le texte
 timer.TextColor3 = Color3.fromRGB(255, 230, 120)
+timer.TextStrokeTransparency = 0.5 -- lisibilité sans fond, quel que soit ce qu'il y a derrière
 timer.Font = Enum.Font.FredokaOne
 timer.TextSize = 28 -- taille fixe : avec TextScaled, la police grossissait/rétrécissait selon le
                      -- nombre de chiffres restants (ex. "150s" vs "5s"), un compteur ne doit pas
@@ -46,7 +46,6 @@ timer.TextSize = 28 -- taille fixe : avec TextScaled, la police grossissait/rét
 timer.Text = ""
 timer.Visible = false
 timer.Parent = gui
-Instance.new("UICorner", timer).CornerRadius = UDim.new(0, 10)
 
 -- Affiche un bandeau puis le masque après 4s (le dernier message gagne)
 local token = 0

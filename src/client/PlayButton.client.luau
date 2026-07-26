@@ -14,6 +14,9 @@ local requestJoinEvent  = lobbyFolder:WaitForChild("RequestJoinQueue")
 local requestLeaveEvent = lobbyFolder:WaitForChild("RequestLeaveQueue")
 local getGamemodesFunc  = lobbyFolder:WaitForChild("GetGamemodes")
 
+local UISound     = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("UISound"))
+local ButtonHover = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("ButtonHover"))
+
 -- ===== État local =====
 local searching   = false -- true dès qu'on a rejoint une file (via bouton ou zone)
 local inRound     = false -- true tant que le joueur est dans une partie lancée (round en cours)
@@ -50,6 +53,7 @@ playButton.BorderSizePixel        = 0
 playButton.ZIndex                 = 10
 playButton.Parent                 = screenGui
 Instance.new("UICorner", playButton).CornerRadius = UDim.new(0, 14)
+ButtonHover.Apply(playButton)
 
 local buttonStroke = Instance.new("UIStroke", playButton)
 buttonStroke.Color     = Color3.fromRGB(255, 255, 255)
@@ -128,11 +132,12 @@ cancelButton.BackgroundColor3   = Color3.fromRGB(200, 60, 60)
 cancelButton.Font               = Enum.Font.GothamBold
 cancelButton.TextSize           = 18
 cancelButton.TextColor3         = Color3.fromRGB(255, 255, 255)
-cancelButton.Text               = "✕"
+cancelButton.Text               = "X"
 cancelButton.BorderSizePixel    = 0
 cancelButton.ZIndex             = 11
 cancelButton.Parent             = searchingFrame
 Instance.new("UICorner", cancelButton).CornerRadius = UDim.new(0, 10)
+ButtonHover.Apply(cancelButton)
 
 -- ===== Comportement =====
 local function refreshVisibility()
@@ -182,8 +187,10 @@ local function openMenu()
 		btn.ZIndex             = 10
 		btn.Parent             = menu
 		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 10)
+		ButtonHover.Apply(btn)
 
 		btn.MouseButton1Click:Connect(function()
+			UISound.PlayClick()
 			requestJoinEvent:FireServer(gm.name)
 			closeMenu()
 		end)
@@ -194,6 +201,7 @@ local function openMenu()
 end
 
 playButton.MouseButton1Click:Connect(function()
+	UISound.PlayClick()
 	if menuOpen then
 		closeMenu()
 	else
@@ -209,6 +217,7 @@ playButton.MouseButton1Click:Connect(function()
 end)
 
 cancelButton.MouseButton1Click:Connect(function()
+	UISound.PlayClick()
 	requestLeaveEvent:FireServer()
 end)
 

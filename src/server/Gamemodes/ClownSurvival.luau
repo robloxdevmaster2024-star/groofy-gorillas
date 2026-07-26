@@ -52,6 +52,7 @@ local movementStateEvent   = getOrCreate(eventsFolder, "MovementStateChanged"); 
 local rosterVisibleEvent   = getOrCreate(eventsFolder, "RosterVisible");   rosterVisibleEvent.Name   = "RosterVisible"
 local rosterUpdateEvent    = getOrCreate(eventsFolder, "RosterUpdate");    rosterUpdateEvent.Name    = "RosterUpdate"
 local statusScreenEvent    = getOrCreate(eventsFolder, "StatusScreen");    statusScreenEvent.Name    = "StatusScreen"
+local screamCountdownEvent = getOrCreate(eventsFolder, "ScreamCountdown"); screamCountdownEvent.Name = "ScreamCountdown"
 
 local ClownSurvival = {}
 
@@ -76,14 +77,19 @@ ClownSurvival.SettingsSchema = {
 -- Nombre de clowns de départ = 1 pour CLOWNS_PLAYER_RATIO joueurs (mini 1), ex. 10 joueurs → 2 clowns.
 local CLOWNS_PLAYER_RATIO = 5
 
--- Plafond de clowns simultanés : ~40% de l'effectif ENCORE PRÉSENT (recalculé à chaque coup de
--- batte, pas figé au début du round — des joueurs peuvent se déconnecter en cours de partie,
--- ce qui doit réduire le plafond en conséquence). Le "+1" par rapport au nombre de clowns
--- actuels garantit qu'au moins une contamination/élimination de plus reste toujours possible
--- (sinon le plafond bloquerait toute progression dès le début dans les petites parties).
--- Une fois le plafond atteint, un coup de batte n'ajoute plus de clown : la victime est
--- ÉLIMINÉE (sort de la partie) plutôt que contaminée.
-local CLOWN_CAP_RATIO = 0.4
+-- Plafond de clowns simultanés : ~30% de l'effectif ENCORE PRÉSENT (recalculé à chaque coup de
+-- batte, pas figé au début du round — des joueurs peuvent se déconnecter en cours de partie, ce
+-- qui doit réduire le plafond en conséquence, voir computeMaxClowns()). Une fois le plafond
+-- atteint, un coup de batte n'ajoute plus de clown : la victime est ÉLIMINÉE (sort de la partie)
+-- plutôt que contaminée.
+-- ⚠️ Valeur choisie pour corriger un cas précis (3 joueurs : à 35-40%, `ceil(ratio×3)` donnait 2
+-- clowns possibles pour 1 seul enfant restant, sans aucune élimination — déséquilibre repéré en
+-- test) — PAS le fruit d'une vraie passe d'équilibrage. À rediscuter sérieusement plus tard,
+-- notamment en tenant compte des DÉCONNEXIONS en cours de partie (déjà pris en compte dans le
+-- calcul via `activePlayers`, mais l'impact sur l'équilibre clowns/enfants n'a pas été retravaillé
+-- avec ce nouveau ratio — voir aussi VOID_DISCONNECT_RATIO/MIN_MEANINGFUL_ROUND_DURATION dans
+-- RoundRunner.luau, sujet proche mais pas encore relié à celui-ci).
+local CLOWN_CAP_RATIO = 0.3
 
 -- Cône de frappe devant le clown (dot product minimal entre direction visée et direction vers la cible)
 local MELEE_CONE_DOT = 0.6 -- ≈ 53°
@@ -92,7 +98,6 @@ local MELEE_CONE_DOT = 0.6 -- ≈ 53°
 local participants: { [Player]: boolean } = {}
 local infected: { [Player]: boolean } = {}
 local eliminated: { [Player]: boolean } = {}  -- sortis de la partie (plafond de clowns atteint)
-local originalClowns: { [Player]: boolean } = {}  -- infecteurs du départ uniquement
 local lastSwing: { [Player]: number } = {}
 local lastTaunt: { [Player]: number } = {}
 local TAUNT_COOLDOWN = 2.0 -- s, anti-spam du bouton taunt
@@ -577,18 +582,47 @@ local function playHitEffect(target: Player)
 	end)
 end
 
+-- Diffuse à TOUS les participants encore en jeu (survivants ET clowns — les clowns en ont besoin
+-- pour ajuster leur jeu, ex. s'arrêter de bouger pour mieux entendre où le prochain cri va se
+-- produire) la durée restante avant le prochain cri. Seuls les ÉLIMINÉS ne le voient plus (sortis
+-- de la partie). On envoie une DURÉE, pas un timestamp `os.clock()` serveur : `os.clock()` n'est
+-- PAS synchronisé entre machines (horloge locale par processus), un timestamp serveur comparé à
+-- `os.clock()` côté client n'aurait aucun sens. Le client additionne cette durée à SON PROPRE
+-- `os.clock()` dès réception pour compter localement.
+local function broadcastScreamCountdown()
+	for player in participants do
+		if player.Parent and not eliminated[player] then
+			screamCountdownEvent:FireClient(player, SCREAM_INTERVAL)
+		end
+	end
+end
+
 -- Boucle de cri : toutes les SCREAM_INTERVAL secondes, chaque survivant (pas les clowns) crie.
 -- `thisRound` invalide la boucle si un nouveau round démarre avant que celui-ci soit terminé.
+-- Échéances calculées à partir d'un instant de référence FIXE (startTime + N × SCREAM_INTERVAL),
+-- pas en enchaînant des `task.wait(SCREAM_INTERVAL)` : `task.wait` ne garantit jamais exactement la
+-- durée demandée (léger dépassement à chaque appel selon la charge serveur), et ces dépassements
+-- s'accumulaient cycle après cycle — le cri réel dérivait peu à peu du compte à rebours affiché
+-- côté client (qui, lui, compte un SCREAM_INTERVAL bien précis à chaque activation). Même classe de
+-- bug que la dérive du chrono de round déjà corrigée dans RoundRunner.luau — recalculer l'échéance
+-- à partir du temps réel écoulé plutôt que d'un comptage de `task.wait` empêche l'erreur de
+-- s'accumuler d'un cycle à l'autre.
 local function startScreamLoop(thisRound: number)
 	task.spawn(function()
+		broadcastScreamCountdown()
+		local startTime = os.clock()
+		local cycleCount = 0
 		while thisRound == roundId do
-			task.wait(SCREAM_INTERVAL)
+			cycleCount += 1
+			local waitTime = (startTime + cycleCount * SCREAM_INTERVAL) - os.clock()
+			if waitTime > 0 then task.wait(waitTime) end
 			if thisRound ~= roundId or not running then break end
 			for player in participants do
 				if not infected[player] and not eliminated[player] then
 					playScreamSound(player)
 				end
 			end
+			broadcastScreamCountdown()
 		end
 	end)
 end
@@ -755,9 +789,31 @@ local function applyKnockbackWithHitStop(player: Player, direction: Vector3)
 end
 
 -- Construit le modèle physique de la batte (deux cylindres soudés, pas d'asset requis).
+--
+-- `Grip` est une part invisible dédiée, PrimaryPart du modèle et point d'attache du Motor6D : son
+-- origine LOCALE correspond au bout du manche tenu en main, pas au centre de la batte. Manche et
+-- tête sont entièrement placés du même côté (-X local), jamais à cheval sur le point de préhension.
+--
+-- ⚠️ Avant ce fix, `Handle` était lui-même le PrimaryPart et sa propre CENTER servait de point
+-- d'attache : la moitié du manche dépassait donc DERRIÈRE la main (côté joueur) tandis que la tête,
+-- placée en +X, se retrouvait — une fois combinée à l'orientation de `BAT_REST_C0` — proche de la
+-- main plutôt que loin devant. Résultat observé en jeu : le clown semblait tenir la batte par le
+-- gros bout, manche pointant vers l'extérieur, l'inverse d'une prise normale. Reconstruit avec un
+-- point de préhension dédié et toute la géométrie du même côté (-X = loin de la main, vérifié
+-- empiriquement être le bon sens avec `BAT_REST_C0` tel quel) : le manche (bout tenu) est bien
+-- proche de `Grip`, la tête loin devant.
 local function createBatModel(): Model
 	local bat = Instance.new("Model")
 	bat.Name = "ClownSurvivalBat"
+
+	local grip = Instance.new("Part")
+	grip.Name = "Grip"
+	grip.Size = Vector3.new(0.2, 0.2, 0.2)
+	grip.Transparency = 1
+	grip.CanCollide = false
+	grip.CanQuery = false
+	grip.Massless = true
+	grip.Parent = bat
 
 	local handle = Instance.new("Part")
 	handle.Name = "Handle"
@@ -768,6 +824,7 @@ local function createBatModel(): Model
 	handle.CanCollide = false
 	handle.CanQuery = false
 	handle.Massless = true
+	handle.CFrame = grip.CFrame * CFrame.new(-0.7, 0, 0) -- manche entier devant Grip, rien qui dépasse derrière
 	handle.Parent = bat
 
 	local barrel = Instance.new("Part")
@@ -779,15 +836,20 @@ local function createBatModel(): Model
 	barrel.CanCollide = false
 	barrel.CanQuery = false
 	barrel.Massless = true
-	barrel.CFrame = handle.CFrame * CFrame.new(1.5, 0, 0)
+	barrel.CFrame = handle.CFrame * CFrame.new(-1.5, 0, 0) -- la tête, encore plus loin de la main
 	barrel.Parent = bat
+
+	local gripWeld = Instance.new("WeldConstraint")
+	gripWeld.Part0 = grip
+	gripWeld.Part1 = handle
+	gripWeld.Parent = grip
 
 	local weld = Instance.new("WeldConstraint")
 	weld.Part0 = handle
 	weld.Part1 = barrel
 	weld.Parent = handle
 
-	bat.PrimaryPart = handle
+	bat.PrimaryPart = grip
 	return bat
 end
 
@@ -834,11 +896,11 @@ local function equipBat(player: Player)
 	local bat = createBatModel()
 	bat.Parent = char
 
-	local handle = bat.PrimaryPart :: BasePart
+	local gripPart = bat.PrimaryPart :: BasePart -- "Grip" (voir createBatModel), pas le manche visible
 	local motor = Instance.new("Motor6D")
 	motor.Name = "BatGrip"
 	motor.Part0 = hand
-	motor.Part1 = handle
+	motor.Part1 = gripPart
 	motor.C0 = restC0
 	motor.Parent = hand
 
@@ -1221,6 +1283,18 @@ local function countActiveClowns(): number
 	return count
 end
 
+-- Nombre d'enfants encore en jeu (ni clown, ni éliminé, toujours connectés) — utilisé pour
+-- détecter le DERNIER enfant restant (voir infectPlayer).
+local function countActiveSurvivors(): number
+	local count = 0
+	for player in participants do
+		if player.Parent and not infected[player] and not eliminated[player] then
+			count += 1
+		end
+	end
+	return count
+end
+
 -- Recompte les joueurs encore présents (certains ont pu se déconnecter en cours de round)
 -- et en déduit le plafond de clowns du moment. Coût négligeable : une boucle sur la poignée
 -- de participants du round, appelée seulement lors d'un coup de batte (pas chaque frame).
@@ -1231,11 +1305,15 @@ local function computeMaxClowns(): number
 			activePlayers += 1
 		end
 	end
-	-- Plancher fixe à 2 (pas "activeClownCount + 1" : ce terme grandissait avec le nombre de
-	-- clowns déjà présents, ce qui annulait le plafond — la contamination ne s'arrêtait jamais).
-	-- Le plancher sert uniquement à permettre la toute première contamination dans les petites
-	-- parties où 40% des joueurs arrondirait à moins de 2.
-	return math.max(2, math.ceil(activePlayers * CLOWN_CAP_RATIO))
+	-- Plancher abaissé à 1 (`ceil(...)` ne peut de toute façon jamais tomber sous 1 tant qu'il y a
+	-- au moins 1 joueur actif, donc ce `max(1, ...)` ne fait plus vraiment qu'documenter l'intention
+	-- — l'ancien plancher à 2 forçait un plafond artificiellement plus haut que le ratio dans les
+	-- petites parties (ex. 3 joueurs à 40% : le ratio seul aurait donné 2, mais même à un ratio plus
+	-- bas le plancher à 2 aurait quand même forcé 2). Le cas "premier coup bloqué" que l'ancien
+	-- plancher visait à éviter est de toute façon déjà couvert autrement par la règle du dernier
+	-- enfant toujours éliminé (voir infectPlayer) : un plafond trop bas ne casse plus rien, il fait
+	-- juste basculer plus tôt en élimination — un résultat normal, pas un blocage.
+	return math.max(1, math.ceil(activePlayers * CLOWN_CAP_RATIO))
 end
 
 -- Liste consolidée clowns/enfants/éliminés (noms), envoyée au panneau roster de chaque joueur
@@ -1261,7 +1339,8 @@ local function broadcastRoster()
 	rosterUpdateEvent:FireAllClients({ clowns = clowns, children = children, eliminated = eliminatedNames })
 end
 
--- Élimine un joueur (plafond de clowns atteint) : il sort de la partie au lieu d'être contaminé.
+-- Élimine un joueur (plafond de clowns atteint OU dernier enfant restant, voir les deux appels
+-- dans infectPlayer) : il sort de la partie au lieu d'être contaminé.
 local function eliminatePlayer(player: Player, knockbackDir: Vector3?)
 	if eliminated[player] or infected[player] then return end
 	eliminated[player] = true
@@ -1272,15 +1351,28 @@ local function eliminatePlayer(player: Player, knockbackDir: Vector3?)
 	applyEliminatedLook(player)
 	tauntAvailableEvent:FireClient(player, false) -- plus dans la partie, plus de bouton taunt
 	proneAvailableEvent:FireClient(player, false) -- plus dans la partie, plus de bouton se coucher
-	GameStatus:FireClient(player, { kind = "banner", text = "💀 Trop de clowns dans le parc, tu es éliminé !" })
+	screamCountdownEvent:FireClient(player, false)  -- plus de cri à venir, plus dans la partie
+	GameStatus:FireClient(player, { kind = "banner", text = "💀 Tu es éliminé !" })
 	statusScreenEvent:FireClient(player, "eliminated")
 	broadcastRoster()
 end
 
--- Retourne true si la contamination a eu lieu, false si le plafond de clowns l'a empêchée
--- (le joueur est alors éliminé au lieu d'être contaminé, voir eliminatePlayer()).
+-- Retourne true si la contamination a eu lieu, false si le plafond de clowns (ou la règle du
+-- dernier enfant ci-dessous) l'a empêchée (le joueur est alors éliminé au lieu d'être contaminé,
+-- voir eliminatePlayer()).
 local function infectPlayer(player: Player, knockbackDir: Vector3?): boolean
 	if infected[player] or eliminated[player] then return false end
+
+	-- Le DERNIER enfant restant est TOUJOURS éliminé, jamais contaminé, quelle que soit la taille
+	-- de la partie (règle demandée explicitement, plus stricte que le plafond de clowns ci-dessous
+	-- qui ne s'applique jamais dans les petites parties — ex. 2 joueurs, plafond planché à 2, un
+	-- seul clown actif, la contamination du seul enfant restant passait toujours). `player` est
+	-- encore compté comme "actif" ici (ni infecté ni éliminé pour de vrai avant ce point), donc
+	-- count == 1 signifie que CE joueur est bien l'unique enfant restant.
+	if countActiveSurvivors() <= 1 then
+		eliminatePlayer(player, knockbackDir)
+		return false
+	end
 
 	local activeClowns = countActiveClowns()
 	if activeClowns >= computeMaxClowns() then
@@ -1297,6 +1389,8 @@ local function infectPlayer(player: Player, knockbackDir: Vector3?): boolean
 	grantWeapon(player)
 	tauntAvailableEvent:FireClient(player, false) -- le bouton taunt est réservé aux non-clowns
 	proneAvailableEvent:FireClient(player, false) -- se coucher est réservé aux non-clowns
+	-- ScreamCountdown PAS désactivé ici : les clowns le voient aussi (voir broadcastScreamCountdown),
+	-- utile pour ajuster leur chasse (s'arrêter de bouger pour mieux écouter le prochain cri).
 	dashAvailableEvent:FireClient(player, true)   -- capacités actives réservées AUX clowns
 	visionAvailableEvent:FireClient(player, true)
 	GameStatus:FireClient(player, { kind = "banner", text = "🤡 Tu es devenu un CLOWN ! Chasse les autres enfants !" })
@@ -1307,9 +1401,9 @@ end
 
 -- Désigne d'urgence un survivant au hasard comme nouveau clown quand le dernier clown vient de se
 -- déconnecter dans les toutes premières secondes du round (voir EMERGENCY_REINFECT_WINDOW) — la
--- partie continue au lieu de se terminer pour une victoire qui n'a pas vraiment eu lieu. Marqué
--- comme `originalClowns` (pas de sa faute d'être forcé dans ce rôle) : il reste éligible à la
--- victoire finale du camp clown, comme n'importe quel clown de départ.
+-- partie continue au lieu de se terminer pour une victoire qui n'a pas vraiment eu lieu. Reste
+-- éligible à la victoire finale du camp clown comme n'importe quel clown (voir CheckWin : tous les
+-- clowns actuels gagnent, pas de distinction "clown de départ" à maintenir ici).
 local function promoteRandomSurvivorToClown(): boolean
 	local candidates: { Player } = {}
 	for p in participants do
@@ -1321,12 +1415,12 @@ local function promoteRandomSurvivorToClown(): boolean
 
 	local chosen = candidates[math.random(1, #candidates)]
 	infected[chosen] = true
-	originalClowns[chosen] = true
 	standUp(chosen)
 	applyInfectedLook(chosen)
 	grantWeapon(chosen)
 	tauntAvailableEvent:FireClient(chosen, false)
 	proneAvailableEvent:FireClient(chosen, false)
+	-- ScreamCountdown PAS désactivé ici non plus, même raison que dans infectPlayer().
 	dashAvailableEvent:FireClient(chosen, true)
 	visionAvailableEvent:FireClient(chosen, true)
 	GameStatus:FireClient(chosen, { kind = "banner", text = "🤡 Il n'y a plus de clown dans la partie, tu es infecté !" })
@@ -1411,7 +1505,7 @@ end
 
 -- ===== Cycle de vie =====
 function ClownSurvival.Start(ctx)
-	participants, infected, eliminated, originalClowns, lastSwing, lastTaunt, connections = {}, {}, {}, {}, {}, {}, {}
+	participants, infected, eliminated, lastSwing, lastTaunt, connections = {}, {}, {}, {}, {}, {}
 	comboCount, comboLastHit = {}, {}
 	stamina, sprinting, sliding, lastSprintStart, staminaDepleted, prone, lastStaminaUse = {}, {}, {}, {}, {}, {}, {}
 	bhopBoost, bhopLastLand, bhopLandToken, bhopChainUsed, bhopLastPress = {}, {}, {}, {}, {}
@@ -1463,11 +1557,12 @@ function ClownSurvival.Start(ctx)
 		local chosen = table.remove(pool, math.random(1, #pool))
 		if chosen then
 			infected[chosen] = true
-			originalClowns[chosen] = true
 			applyInfectedLook(chosen)
 			grantWeapon(chosen)
 			dashAvailableEvent:FireClient(chosen, true)
 			visionAvailableEvent:FireClient(chosen, true)
+			-- Pas de false pour ScreamCountdown ici : les clowns de départ le voient aussi désormais
+			-- (broadcastScreamCountdown, appelé juste après via startScreamLoop, les active).
 			GameStatus:FireClient(chosen, { kind = "banner", text = "🤡 Tu es LE CLOWN ! Chasse les enfants à la batte !" })
 		end
 	end
@@ -1790,13 +1885,11 @@ function ClownSurvival.CheckWin()
 	if #survivors == 0 then
 		-- Qu'il n'y ait plus que des clowns (contamination normale) ou que des clowns + des
 		-- éliminés (déconnexions ayant vidé le camp survivant), le résultat est le même : plus
-		-- aucun enfant à chasser. Seuls les infecteurs ORIGINAUX gagnent (les contaminés en
-		-- cours de round ont perdu).
-		local winners = {}
-		for player in originalClowns do
-			if player.Parent then table.insert(winners, player) end
-		end
-		return winners, "Tous les survivants ont été infectés ou éliminés !"
+		-- aucun enfant à chasser. TOUS les clowns actuels gagnent, qu'ils l'aient été dès le
+		-- départ ou contaminés en cours de round — le camp clown a gagné, tout le monde qui en
+		-- fait partie à la fin en profite (`infectors` est déjà exactement cette liste, filtrée
+		-- en tête de fonction : infecté ET toujours connecté).
+		return infectors, "Tous les survivants ont été infectés ou éliminés !"
 	end
 
 	return nil, nil -- le round continue
@@ -1812,11 +1905,14 @@ function ClownSurvival.ResolveTimeout()
 	return survivors, "Temps écoulé ! Les survivants ont résisté. 🛡️"
 end
 
--- Appelé par le RoundManager avant Stop() pour enrichir le contexte achievements.
+-- Appelé par le RoundManager avant Stop() pour enrichir le contexte achievements. Statut ACTUEL
+-- (infected == clown) de chaque gagnant : TOUS les clowns présents à la fin comptent comme
+-- gagnants du camp clown, qu'ils l'aient été dès le départ ou contaminés en cours de round — voir
+-- CheckWin() plus bas, qui inclut désormais tous les infecteurs actuels dans la liste `winners`.
 function ClownSurvival.GetWinnerRoles(winners: { Player })
 	local roles = {}
 	for _, player in winners do
-		roles[player] = originalClowns[player] and "clown" or "survivor"
+		roles[player] = infected[player] and "clown" or "survivor"
 	end
 	return roles
 end
@@ -1841,13 +1937,30 @@ function ClownSurvival.GetNeverTouchedSurvivors(): { Player }
 	return survivors
 end
 
+-- Appelé par RoundRunner avant Stop() pour l'écran de fin de partie (regroupement Clowns/Enfants/
+-- Éliminés, même logique que le panneau "Effectifs de la partie" en direct, voir broadcastRoster())
+-- : statut ACTUEL de chaque participant, pas juste des gagnants (GetWinnerRoles() ci-dessus ne
+-- couvre que winners — utile pour les gagnants, insuffisant pour afficher TOUT LE MONDE).
+function ClownSurvival.GetParticipantRoles(): { [Player]: string }
+	local roles = {}
+	for player in participants do
+		if eliminated[player] then
+			roles[player] = "eliminated"
+		elseif infected[player] then
+			roles[player] = "clown"
+		else
+			roles[player] = "survivor"
+		end
+	end
+	return roles
+end
+
 function ClownSurvival.OnPlayerRemoving(player)
 	local wasActiveClown = running and infected[player] == true
 
 	participants[player] = nil
 	infected[player] = nil
 	eliminated[player] = nil
-	originalClowns[player] = nil
 	lastSwing[player] = nil
 	lastTaunt[player] = nil
 	batRigs[player] = nil
@@ -1912,9 +2025,10 @@ function ClownSurvival.Stop()
 	dashAvailableEvent:FireAllClients(false)
 	visionAvailableEvent:FireAllClients(false)
 	rosterVisibleEvent:FireAllClients(false)
+	screamCountdownEvent:FireAllClients(false) -- sinon un survivant qui gagne en tenant jusqu'au bout du chrono garde le compte à rebours affiché (figé) au retour au lobby
 	restoreAtmosphere()
 
-	participants, infected, eliminated, originalClowns, lastSwing, lastTaunt, batRigs = {}, {}, {}, {}, {}, {}, {}
+	participants, infected, eliminated, lastSwing, lastTaunt, batRigs = {}, {}, {}, {}, {}, {}
 	comboCount, comboLastHit = {}, {}
 	stamina, sprinting, sliding, lastSprintStart, staminaDepleted, prone, lastStaminaUse = {}, {}, {}, {}, {}, {}, {}
 	bhopBoost, bhopLastLand, bhopLandToken, bhopChainUsed, bhopLastPress = {}, {}, {}, {}, {}

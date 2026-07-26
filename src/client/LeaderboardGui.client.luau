@@ -1,5 +1,9 @@
 --!nonstrict
--- LeaderboardGui.client.luau — Overlay classement global (Tab pour toggle).
+-- LeaderboardGui.client.luau — Overlay classements (Tab pour toggle).
+-- Deux dimensions de sélection : période (ALL TIME / HEBDO) x board (GP / Victoires / Meilleure
+-- série), pilotées par shared/Config/LeaderboardsConfig.luau. Le serveur envoie TOUT le payload
+-- (les 3 boards x 2 périodes) à chaque Refresh ; changer d'onglet ne fait que re-rendre depuis le
+-- cache local, aucun aller-retour serveur nécessaire.
 
 local Players           = game:GetService("Players")
 local UserInputService  = game:GetService("UserInputService")
@@ -10,22 +14,30 @@ local localPlayer = Players.LocalPlayer
 local eventsFolder = ReplicatedStorage:WaitForChild("LeaderboardEvents")
 local lbEvent      = eventsFolder:WaitForChild("Board")
 
+local LeaderboardsConfig = require(
+	ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("LeaderboardsConfig")
+)
+local UISound = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("UISound"))
+local ButtonHover = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("ButtonHover"))
 local PanelCoordinator = require(
 	ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("PanelCoordinator")
 )
 local PANEL_ID = "leaderboard"
 
 -- ===== Constantes UI =====
-local PANEL_W   = 400
-local PANEL_H   = 460
-local ROW_H     = 36
-local HEADER_H  = 44
-local COLOR_BG  = Color3.fromRGB(14, 14, 18)
-local COLOR_ROW = Color3.fromRGB(28, 28, 36)
-local COLOR_ME  = Color3.fromRGB(210, 160, 10)
-local COLOR_TXT = Color3.fromRGB(230, 230, 235)
-local COLOR_DIM = Color3.fromRGB(140, 140, 150)
-local COLOR_TOP = Color3.fromRGB(255, 210, 30)
+local PANEL_W    = 400
+local PANEL_H    = 520
+local ROW_H      = 34
+local HEADER_H   = 44
+local TABS_H     = 30 -- hauteur d'une rangée d'onglets
+local COLOR_BG   = Color3.fromRGB(14, 14, 18)
+local COLOR_ROW  = Color3.fromRGB(28, 28, 36)
+local COLOR_ME   = Color3.fromRGB(210, 160, 10)
+local COLOR_TXT  = Color3.fromRGB(230, 230, 235)
+local COLOR_DIM  = Color3.fromRGB(140, 140, 150)
+local COLOR_TOP  = Color3.fromRGB(255, 210, 30)
+local COLOR_TAB_OFF = Color3.fromRGB(26, 26, 34)
+local COLOR_TAB_ON  = Color3.fromRGB(60, 48, 10)
 
 -- ===== Construction du GUI =====
 local screenGui = Instance.new("ScreenGui")
@@ -64,10 +76,11 @@ titleLabel.Size               = UDim2.new(1, -50, 1, 0)
 titleLabel.Position           = UDim2.new(0, 14, 0, 0)
 titleLabel.BackgroundTransparency = 1
 titleLabel.Font               = Enum.Font.GothamBold
-titleLabel.TextSize           = 17
+titleLabel.TextSize           = 15
 titleLabel.TextColor3         = COLOR_TOP
 titleLabel.TextXAlignment     = Enum.TextXAlignment.Left
-titleLabel.Text               = "🏆  CLASSEMENT GLOBAL — GOOFY POINTS"
+titleLabel.TextTruncate       = Enum.TextTruncate.AtEnd
+titleLabel.Text               = "🏆  CLASSEMENT"
 
 -- Bouton fermer (X)
 local closeBtn = Instance.new("TextButton", titleBar)
@@ -80,11 +93,48 @@ closeBtn.TextColor3        = Color3.fromRGB(255, 200, 200)
 closeBtn.Text              = "X"
 closeBtn.AutoButtonColor   = true
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+ButtonHover.Apply(closeBtn)
+
+-- ===== Onglets : période (ALL TIME / HEBDO) =====
+local periodRow = Instance.new("Frame", panel)
+periodRow.Size               = UDim2.new(1, -24, 0, TABS_H)
+periodRow.Position           = UDim2.new(0, 12, 0, HEADER_H + 6)
+periodRow.BackgroundTransparency = 1
+local periodLayout = Instance.new("UIListLayout", periodRow)
+periodLayout.FillDirection = Enum.FillDirection.Horizontal
+periodLayout.Padding       = UDim.new(0, 6)
+periodLayout.SortOrder     = Enum.SortOrder.LayoutOrder
+
+-- ===== Onglets : board (GP / Victoires / Meilleure série) =====
+local boardRow = Instance.new("Frame", panel)
+boardRow.Size               = UDim2.new(1, -24, 0, TABS_H)
+boardRow.Position           = UDim2.new(0, 12, 0, HEADER_H + 6 + TABS_H + 6)
+boardRow.BackgroundTransparency = 1
+local boardLayout = Instance.new("UIListLayout", boardRow)
+boardLayout.FillDirection = Enum.FillDirection.Horizontal
+boardLayout.Padding       = UDim.new(0, 6)
+boardLayout.SortOrder     = Enum.SortOrder.LayoutOrder
+
+local TABS_TOP = HEADER_H + 6 + (TABS_H + 6) * 2 -- bas de la 2ᵉ rangée d'onglets
+
+-- Sous-titre (numéro de semaine, visible seulement en HEBDO)
+local weekLabel = Instance.new("TextLabel", panel)
+weekLabel.Size               = UDim2.new(1, -24, 0, 16)
+weekLabel.Position           = UDim2.new(0, 12, 0, TABS_TOP)
+weekLabel.BackgroundTransparency = 1
+weekLabel.Font               = Enum.Font.Gotham
+weekLabel.TextSize           = 11
+weekLabel.TextColor3         = COLOR_DIM
+weekLabel.TextXAlignment     = Enum.TextXAlignment.Left
+weekLabel.Text               = ""
+weekLabel.Visible            = false
+
+local LIST_TOP = TABS_TOP + 18
 
 -- En-tête colonnes
 local colHeader = Instance.new("Frame", panel)
-colHeader.Size              = UDim2.new(1, -24, 0, 28)
-colHeader.Position          = UDim2.new(0, 12, 0, HEADER_H + 6)
+colHeader.Size              = UDim2.new(1, -24, 0, 22)
+colHeader.Position           = UDim2.new(0, 12, 0, LIST_TOP)
 colHeader.BackgroundTransparency = 1
 
 local function colLabel(parent, text, xPct, wPct, align)
@@ -100,20 +150,20 @@ local function colLabel(parent, text, xPct, wPct, align)
 	return l
 end
 colLabel(colHeader, "#",       0,    0.08)
-colLabel(colHeader, "JOUEUR",  0.08, 0.62)
-colLabel(colHeader, "GP",      0.70, 0.30, Enum.TextXAlignment.Right)
+colLabel(colHeader, "JOUEUR",  0.08, 0.52)
+local scoreHeaderLabel = colLabel(colHeader, "GP", 0.60, 0.40, Enum.TextXAlignment.Right)
 
 -- Séparateur
 local sep = Instance.new("Frame", panel)
 sep.Size              = UDim2.new(1, -24, 0, 1)
-sep.Position          = UDim2.new(0, 12, 0, HEADER_H + 36)
+sep.Position          = UDim2.new(0, 12, 0, LIST_TOP + 26)
 sep.BackgroundColor3  = Color3.fromRGB(55, 55, 70)
 sep.BorderSizePixel   = 0
 
--- Conteneur des lignes (liste scrollable)
+-- Conteneur des lignes (liste scrollable — molette native, aucun code requis)
 local rowList = Instance.new("ScrollingFrame", panel)
-rowList.Size                     = UDim2.new(1, -24, 1, -(HEADER_H + 42 + 40))
-rowList.Position                 = UDim2.new(0, 12, 0, HEADER_H + 42)
+rowList.Size                     = UDim2.new(1, -24, 1, -(LIST_TOP + 32 + 40))
+rowList.Position                 = UDim2.new(0, 12, 0, LIST_TOP + 32)
 rowList.BackgroundTransparency   = 1
 rowList.BorderSizePixel          = 0
 rowList.ScrollBarThickness       = 4
@@ -123,17 +173,6 @@ rowList.AutomaticCanvasSize      = Enum.AutomaticSize.Y
 local rowLayout = Instance.new("UIListLayout", rowList)
 rowLayout.SortOrder = Enum.SortOrder.LayoutOrder
 rowLayout.Padding   = UDim.new(0, 4)
-
--- Placeholder chargement
-local placeholderLabel = Instance.new("TextLabel", rowList)
-placeholderLabel.Name              = "Placeholder"
-placeholderLabel.Size              = UDim2.new(1, 0, 0, 50)
-placeholderLabel.BackgroundTransparency = 1
-placeholderLabel.Font              = Enum.Font.Gotham
-placeholderLabel.TextSize          = 14
-placeholderLabel.TextColor3        = COLOR_DIM
-placeholderLabel.Text              = "Chargement du classement…"
-placeholderLabel.LayoutOrder       = 0
 
 -- Hint bas
 local hintLabel = Instance.new("TextLabel", panel)
@@ -159,9 +198,20 @@ toggleBtn.TextColor3       = COLOR_TOP
 toggleBtn.Text             = "🏆"
 toggleBtn.AutoButtonColor  = true
 Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 8)
+ButtonHover.Apply(toggleBtn)
+
+-- ===== État =====
+local selectedPeriod = "alltime"
+local selectedBoard  = "gp"
+local latestPayload  = { boards = {}, weekId = "" }
+
+local boardsById = {}
+for _, board in LeaderboardsConfig.BOARDS do
+	boardsById[board.id] = board
+end
 
 -- ===== Helpers =====
-local function makeRow(entry, order)
+local function makeRow(entry, order, board)
 	local isMe = (entry.userId == localPlayer.UserId)
 
 	local row = Instance.new("Frame", rowList)
@@ -187,7 +237,7 @@ local function makeRow(entry, order)
 	rankLbl.Text               = rankStr
 
 	local nameLbl = Instance.new("TextLabel", row)
-	nameLbl.Size              = UDim2.new(0.62, 0, 1, 0)
+	nameLbl.Size              = UDim2.new(0.52, 0, 1, 0)
 	nameLbl.Position          = UDim2.new(0.08, 0, 0, 0)
 	nameLbl.BackgroundTransparency = 1
 	nameLbl.Font              = isMe and Enum.Font.GothamBold or Enum.Font.Gotham
@@ -197,23 +247,34 @@ local function makeRow(entry, order)
 	nameLbl.Text              = isMe and ("▶ " .. entry.name) or entry.name
 
 	local scoreLbl = Instance.new("TextLabel", row)
-	scoreLbl.Size              = UDim2.new(0.30, -6, 1, 0)
-	scoreLbl.Position          = UDim2.new(0.70, 0, 0, 0)
+	scoreLbl.Size              = UDim2.new(0.40, -6, 1, 0)
+	scoreLbl.Position          = UDim2.new(0.60, 0, 0, 0)
 	scoreLbl.BackgroundTransparency = 1
 	scoreLbl.Font              = Enum.Font.GothamBold
 	scoreLbl.TextSize          = 14
 	scoreLbl.TextColor3        = isMe and COLOR_ME or COLOR_TXT
 	scoreLbl.TextXAlignment    = Enum.TextXAlignment.Right
-	scoreLbl.Text              = tostring(entry.score) .. " GP"
+	scoreLbl.Text              = LeaderboardsConfig.FormatScore(board, entry.score)
 
 	return row
 end
 
-local function rebuildList(entries)
+local function rebuildList()
 	rowList:ClearAllChildren()
 	local newLayout = Instance.new("UIListLayout", rowList)
 	newLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	newLayout.Padding   = UDim.new(0, 4)
+
+	local board = boardsById[selectedBoard]
+	local entries = latestPayload.boards[selectedBoard]
+	entries = entries and entries[selectedPeriod] or {}
+
+	titleLabel.Text = board.icon .. "  CLASSEMENT — " .. board.labelUpper
+		.. (selectedPeriod == "weekly" and " (HEBDO)" or " (ALL TIME)")
+	scoreHeaderLabel.Text = board.unitUpper
+
+	weekLabel.Visible = selectedPeriod == "weekly"
+	weekLabel.Text     = "Semaine " .. latestPayload.weekId
 
 	if #entries == 0 then
 		local lbl = Instance.new("TextLabel", rowList)
@@ -228,14 +289,64 @@ local function rebuildList(entries)
 	end
 
 	for _, entry in entries do
-		makeRow(entry, entry.rank)
+		makeRow(entry, entry.rank, board)
 	end
 end
+
+-- ===== Construction des boutons d'onglets (data-driven, LeaderboardsConfig) =====
+local function makeTabButton(parent, text, widthScale, onClick)
+	local btn = Instance.new("TextButton", parent)
+	btn.Size              = UDim2.new(widthScale, -4, 1, 0)
+	btn.BackgroundColor3  = COLOR_TAB_OFF
+	btn.Font              = Enum.Font.GothamBold
+	btn.TextSize           = 13
+	btn.TextColor3        = COLOR_DIM
+	btn.Text              = text
+	btn.AutoButtonColor   = true
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 7)
+	ButtonHover.Apply(btn, 0.96) -- effet plus discret que les gros boutons (onglets déjà petits)
+	btn.MouseButton1Click:Connect(onClick)
+	return btn
+end
+
+local periodButtons = {}
+for _, period in LeaderboardsConfig.PERIODS do
+	local btn = makeTabButton(periodRow, period.label, 1 / #LeaderboardsConfig.PERIODS, function()
+		selectedPeriod = period.id
+		rebuildList()
+		for id, b in periodButtons do
+			b.BackgroundColor3 = (id == period.id) and COLOR_TAB_ON or COLOR_TAB_OFF
+			b.TextColor3       = (id == period.id) and COLOR_TOP or COLOR_DIM
+		end
+	end)
+	periodButtons[period.id] = btn
+end
+periodButtons[selectedPeriod].BackgroundColor3 = COLOR_TAB_ON
+periodButtons[selectedPeriod].TextColor3       = COLOR_TOP
+
+local boardButtons = {}
+for _, board in LeaderboardsConfig.BOARDS do
+	local btn = makeTabButton(boardRow, board.icon .. " " .. board.label, 1 / #LeaderboardsConfig.BOARDS, function()
+		selectedBoard = board.id
+		rebuildList()
+		for id, b in boardButtons do
+			b.BackgroundColor3 = (id == board.id) and COLOR_TAB_ON or COLOR_TAB_OFF
+			b.TextColor3       = (id == board.id) and COLOR_TOP or COLOR_DIM
+		end
+	end)
+	boardButtons[board.id] = btn
+end
+boardButtons[selectedBoard].BackgroundColor3 = COLOR_TAB_ON
+boardButtons[selectedBoard].TextColor3       = COLOR_TOP
 
 -- ===== Toggle =====
 local function setVisible(v: boolean)
 	panel.Visible = v
-	if v then PanelCoordinator.NotifyOpened(PANEL_ID) end
+	if v then
+		PanelCoordinator.NotifyOpened(PANEL_ID) -- joue aussi le son d'ouverture, voir PanelCoordinator.luau
+	else
+		UISound.PlayClick()
+	end
 end
 local function toggle()
 	setVisible(not panel.Visible)
@@ -261,5 +372,6 @@ end)
 
 -- ===== Réception données serveur =====
 lbEvent.OnClientEvent:Connect(function(data)
-	rebuildList(data.entries or {})
+	latestPayload = data or { boards = {}, weekId = "" }
+	rebuildList()
 end)

@@ -27,6 +27,8 @@ local PlayerConfig = require(
 local PanelCoordinator = require(
 	ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("PanelCoordinator")
 )
+local UISound = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("UISound"))
+local ButtonHover = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("ButtonHover"))
 local PANEL_ID = "profile"
 
 local musicGroup = SoundService:WaitForChild("Music")
@@ -100,6 +102,7 @@ closeBtn.TextColor3        = Color3.fromRGB(255, 200, 200)
 closeBtn.Text              = "X"
 closeBtn.AutoButtonColor   = true
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+ButtonHover.Apply(closeBtn)
 
 -- Barre d'onglets
 local tabsBar = Instance.new("Frame", panel)
@@ -134,6 +137,7 @@ toggleBtn.TextColor3       = COLOR_TOP
 toggleBtn.Text             = "👤"
 toggleBtn.AutoButtonColor  = true
 Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 8)
+ButtonHover.Apply(toggleBtn)
 
 -- ===== Helpers génériques =====
 local function makePage(name)
@@ -429,6 +433,7 @@ local function makeSettingRow(entry, order)
 		btn.TextColor3        = Color3.fromRGB(255, 255, 255)
 		btn.AutoButtonColor   = true
 		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+		ButtonHover.Apply(btn)
 	end
 
 	local function applyDelta(delta)
@@ -497,6 +502,7 @@ for _, name in { "Profil", "Succès", "Cosmétiques", "Réglages" } do
 	btn.Text              = name
 	btn.AutoButtonColor   = true
 	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+	ButtonHover.Apply(btn, 0.96) -- effet plus discret que les gros boutons (onglets déjà petits)
 	btn.MouseButton1Click:Connect(function() selectTab(name) end)
 	tabButtons[name] = btn
 end
@@ -553,8 +559,10 @@ local function setVisible(v: boolean)
 		-- Notifier AVANT refresh() : refresh() invoque une RemoteFunction (aller-retour réseau
 		-- bloquant) pour récupérer le snapshot du profil — si on notifiait après, les autres
 		-- panneaux mettraient ce délai réseau à se fermer au lieu de disparaître instantanément.
-		PanelCoordinator.NotifyOpened(PANEL_ID)
+		PanelCoordinator.NotifyOpened(PANEL_ID) -- joue aussi le son d'ouverture, voir PanelCoordinator.luau
 		refresh()
+	else
+		UISound.PlayClick()
 	end
 end
 toggleBtn.MouseButton1Click:Connect(function() setVisible(not panel.Visible) end)

@@ -5,13 +5,18 @@
 -- panneaux centrés l'un sur l'autre. Chaque panneau s'enregistre ici : à l'ouverture, il notifie
 -- les autres, qui se ferment s'ils étaient ouverts.
 
+local UISound = require(script.Parent.UISound)
+
 local PanelCoordinator = {}
 
 local signal = Instance.new("BindableEvent")
 
 -- À appeler quand CE panneau vient de s'ouvrir : prévient tous les autres panneaux enregistrés
--- (sauf celui qui vient de s'ouvrir) qu'ils doivent se fermer.
+-- (sauf celui qui vient de s'ouvrir) qu'ils doivent se fermer. Joue aussi le son d'ouverture
+-- (UISound.PlayOpen) — point de passage unique pour TOUS les panneaux centrés (Classement, Profil,
+-- Effectifs, écran de fin...), pas besoin de le répéter dans chaque fichier.
 function PanelCoordinator.NotifyOpened(id: string)
+	UISound.PlayOpen()
 	signal:Fire(id)
 end
 

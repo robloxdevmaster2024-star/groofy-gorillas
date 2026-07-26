@@ -19,6 +19,8 @@ local rosterUpdateEvent  = eventsFolder:WaitForChild("RosterUpdate")
 local PanelCoordinator = require(
 	ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("PanelCoordinator")
 )
+local UISound = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("UISound"))
+local ButtonHover = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("ButtonHover"))
 local PANEL_ID = "roster"
 
 -- ===== Constantes UI (même palette que LeaderboardGui/ProfileMenu) =====
@@ -86,6 +88,7 @@ closeBtn.TextColor3        = Color3.fromRGB(255, 200, 200)
 closeBtn.Text              = "X"
 closeBtn.AutoButtonColor   = true
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+ButtonHover.Apply(closeBtn)
 
 -- Conteneur des 3 sections, empilées verticalement
 local sectionsContainer = Instance.new("Frame", panel)
@@ -134,13 +137,12 @@ for i, section in SECTIONS do
 	sectionLists[section.key] = { header = header, names = namesLabel, title = section.title }
 end
 
--- ===== Bouton de toggle (haut-droite, à gauche du chrono de round — StatusHud.client.luau,
--- même rangée y=74 pour rester sous la barre native Roblox) =====
+-- ===== Bouton de toggle (tout en haut à droite) =====
 local toggleBtn = Instance.new("TextButton", screenGui)
 toggleBtn.Name             = "ToggleBtn"
 toggleBtn.Size             = UDim2.new(0, 42, 0, 42)
 toggleBtn.AnchorPoint      = Vector2.new(1, 0)
-toggleBtn.Position         = UDim2.new(1, -144, 0, 74)
+toggleBtn.Position         = UDim2.new(1, -16, 0, 8)
 toggleBtn.BackgroundColor3 = Color3.fromRGB(40, 36, 20)
 toggleBtn.Font             = Enum.Font.GothamBold
 toggleBtn.TextSize         = 22
@@ -149,11 +151,16 @@ toggleBtn.Text             = "📋"
 toggleBtn.AutoButtonColor  = true
 toggleBtn.Visible          = false -- affiché seulement pendant un round Clown Survival (RosterVisible)
 Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 8)
+ButtonHover.Apply(toggleBtn)
 
 -- ===== Logique =====
 local function setVisible(v: boolean)
 	panel.Visible = v
-	if v then PanelCoordinator.NotifyOpened(PANEL_ID) end
+	if v then
+		PanelCoordinator.NotifyOpened(PANEL_ID) -- joue aussi le son d'ouverture, voir PanelCoordinator.luau
+	else
+		UISound.PlayClick()
+	end
 end
 toggleBtn.MouseButton1Click:Connect(function() setVisible(not panel.Visible) end)
 closeBtn.MouseButton1Click:Connect(function() setVisible(false) end)

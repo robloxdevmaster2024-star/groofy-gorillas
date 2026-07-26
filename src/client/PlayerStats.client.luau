@@ -9,6 +9,7 @@ local DataUpdated  = ReplicatedStorage:WaitForChild("DataUpdated")
 local PlayerConfig = require(
 	ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("PlayerConfig")
 )
+local UISound = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("UISound"))
 local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
 
 -- ===== Construction de l'UI =====
@@ -92,6 +93,54 @@ levelUpBanner.Visible       = false
 levelUpBanner.Parent        = gui
 Instance.new("UICorner", levelUpBanner).CornerRadius = UDim.new(0, 16)
 
+-- ===== Pop "+X GP" (façon GTA) =====
+-- Chaque gain (kill, combo, palier de survie...) fait apparaître un petit label au-dessus du
+-- panneau qui monte en flottant tout en s'estompant. `panel` ne clippe pas ses enfants, donc les
+-- pops peuvent dépasser son bord haut sans souci.
+
+local GP_POPUP_COLOR_POSITIVE = Color3.fromRGB(120, 220, 100) -- même vert que la barre de progression
+local GP_POPUP_COLOR_NEGATIVE = Color3.fromRGB(230, 90, 90)
+local GP_POPUP_TEXT_SIZE      = 30   -- 1.5x la taille initiale (20)
+local GP_POPUP_RISE           = 65   -- distance parcourue vers le haut, en pixels
+local GP_POPUP_DURATION       = 1.8  -- secondes
+local GP_POPUP_STACK_OFFSET   = 32   -- décalage vertical entre pops simultanés (texte plus gros)
+
+local activeGPPopups = 0
+
+local function spawnGPPopup(delta: number)
+	local stackIndex = activeGPPopups
+	activeGPPopups += 1
+
+	local startY = -stackIndex * GP_POPUP_STACK_OFFSET
+
+	local label = Instance.new("TextLabel")
+	label.Name              = "GPPopup"
+	label.AnchorPoint        = Vector2.new(0.5, 1)
+	label.Position           = UDim2.new(0.5, 0, 0, startY)
+	label.Size               = UDim2.new(0, 0, 0, 33)
+	label.AutomaticSize      = Enum.AutomaticSize.X
+	label.BackgroundTransparency = 1
+	label.Font               = Enum.Font.FredokaOne
+	label.TextSize           = GP_POPUP_TEXT_SIZE
+	label.TextColor3         = delta > 0 and GP_POPUP_COLOR_POSITIVE or GP_POPUP_COLOR_NEGATIVE
+	label.TextStrokeTransparency = 0.4
+	label.TextStrokeColor3   = Color3.new(0, 0, 0)
+	label.Text               = string.format("%+d GP", delta)
+	label.ZIndex             = 5
+	label.Parent             = panel
+
+	TweenService:Create(label, TweenInfo.new(GP_POPUP_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		Position              = UDim2.new(0.5, 0, 0, startY - GP_POPUP_RISE),
+		TextTransparency      = 1,
+		TextStrokeTransparency = 1,
+	}):Play()
+
+	task.delay(GP_POPUP_DURATION, function()
+		label:Destroy()
+		activeGPPopups = math.max(0, activeGPPopups - 1)
+	end)
+end
+
 -- ===== Logique =====
 
 local function getProgress(gp, level)
@@ -102,12 +151,18 @@ local function getProgress(gp, level)
 end
 
 local levelUpToken = 0
+local lastGP: number? = nil -- nil tant qu'on n'a pas reçu le premier DataUpdated (pas de pop au chargement initial)
 
 local function onDataUpdated(payload)
 	if type(payload) ~= "table" then return end
 
 	local gp    = payload.goofyPoints or 0
 	local level = payload.level or 1
+
+	if lastGP ~= nil and gp ~= lastGP then
+		spawnGPPopup(gp - lastGP)
+	end
+	lastGP = gp
 
 	lvlLabel.Text = "Niv. " .. level
 	gpLabel.Text  = gp .. " GP"
@@ -120,6 +175,7 @@ local function onDataUpdated(payload)
 
 	-- Notification de montée de niveau
 	if payload.leveledUp then
+		UISound.PlayNotify()
 		levelUpToken += 1
 		local myToken = levelUpToken
 		levelUpBanner.Text    = "⬆ NIVEAU " .. level .. " atteint !"

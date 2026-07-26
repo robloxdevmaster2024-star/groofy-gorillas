@@ -15,6 +15,15 @@ local PlayerConfig       = require(
 
 local GameStatus = ReplicatedStorage:WaitForChild("GameStatus")
 
+-- RemoteEvent : résumé de fin de round (classement + GP gagnés + rejouer), voir EndScreen.client.luau.
+-- Diffusé uniquement aux PARTICIPANTS du round (pas à tout le serveur/lobby).
+local RoundEndSummary = ReplicatedStorage:FindFirstChild("RoundEndSummary")
+if not RoundEndSummary then
+	RoundEndSummary = Instance.new("RemoteEvent")
+	RoundEndSummary.Name   = "RoundEndSummary"
+	RoundEndSummary.Parent = ReplicatedStorage
+end
+
 local RoundRunner = {}
 
 -- ===== Victoires "vidées" (rounds avortés par déconnexions en cascade) =====
@@ -68,6 +77,14 @@ function RoundRunner.RunRound(gamemode, players: { Player }, settings)
 	banner("▶️ " .. gamemode.Name .. " commence !")
 	task.wait(1.5)
 
+	-- Total des GP gagnés PENDANT ce round précis (actions + bonus de fin), pour l'écran de fin de
+	-- partie (voir EndScreen.client.luau) — distinct du total cumulé (lifetime) du profil.
+	local roundGPEarned: { [Player]: number } = {}
+	local function award(player: Player, amount: number)
+		DataService.AddGoofyPoints(player, amount)
+		roundGPEarned[player] = (roundGPEarned[player] or 0) + amount
+	end
+
 	-- Récompenses d'ACTION (voir PlayerConfig.POINTS.KILL/FIRST_BLOOD/etc.) : accordées EN DIRECT
 	-- pendant le round via ce callback injecté dans le ctx, plutôt qu'accumulées et distribuées à
 	-- la fin comme les stats/streaks. Deux raisons : le joueur voit sa barre de GP progresser tout
@@ -79,7 +96,7 @@ function RoundRunner.RunRound(gamemode, players: { Player }, settings)
 		if not player.Parent then return end
 		local profile = DataService.GetProfile(player)
 		if not profile then return end
-		DataService.AddGoofyPoints(player, amount)
+		award(player, amount)
 	end
 
 	local ctx = {
@@ -97,6 +114,11 @@ function RoundRunner.RunRound(gamemode, players: { Player }, settings)
 	-- Boucle principale
 	local loopStartTime = os.clock()
 	gamemode.Start(ctx)
+	-- Affichage immédiat (durée pleine) : sans ça, le timer restait invisible pendant le premier
+	-- task.wait(1) de la boucle ci-dessous, alors que gamemode.Start() vient déjà d'activer les
+	-- autres boutons du round (Taunt, Roster, compte à rebours du cri...) — décalage visible d'~1s
+	-- entre le timer et le reste du HUD au lancement d'une partie.
+	timerText("⏱️ " .. gamemode.RoundDuration .. "s")
 	local winners, reason
 	local endedEarlyAt: number? = nil
 	-- Chrono affiché basé sur le temps RÉEL écoulé (os.clock()), pas sur un simple comptage
@@ -123,6 +145,10 @@ function RoundRunner.RunRound(gamemode, players: { Player }, settings)
 	-- Métadonnées avant Stop() (certains modes effacent leur état dans Stop)
 	local winnerRoles = gamemode.GetWinnerRoles and gamemode.GetWinnerRoles(winners) or {}
 	local killCounts  = gamemode.GetKillCounts and gamemode.GetKillCounts() or {}
+	-- Statut ACTUEL de TOUS les participants (pas juste les gagnants) — pour l'écran de fin de
+	-- partie (regroupement par section, voir EndScreen.client.luau). Distinct de winnerRoles : voir
+	-- le commentaire de GetParticipantRoles() dans ClownSurvival.luau.
+	local participantRoles = gamemode.GetParticipantRoles and gamemode.GetParticipantRoles() or {}
 	local winnerSet   = {}
 	for _, w in winners do winnerSet[w] = true end
 
@@ -188,6 +214,13 @@ function RoundRunner.RunRound(gamemode, players: { Player }, settings)
 			elseif role == "survivor" then
 				profile.stats.survivorWins = (profile.stats.survivorWins or 0) + 1
 			end
+
+			LeaderboardService.UpdateScore("wins", "alltime", p.UserId, profile.stats.gamesWon)
+			local weeklyWin = DataService.EnsureCurrentWeek(p)
+			if weeklyWin then
+				weeklyWin.wins += 1
+				LeaderboardService.UpdateScore("wins", "weekly", p.UserId, weeklyWin.wins)
+			end
 		end
 
 		-- Win streak par gamemode : victoires consécutives sur CE mode précis, remise à 0 dès
@@ -199,13 +232,30 @@ function RoundRunner.RunRound(gamemode, players: { Player }, settings)
 			if streak > (profile.stats.bestStreaks[gamemode.Name] or 0) then
 				profile.stats.bestStreaks[gamemode.Name] = streak
 			end
+
+			-- Classement "Meilleure série" : un seul nombre par joueur, le record tous gamemodes
+			-- confondus (le framework reste générique — un futur 2ᵉ mode avec streaks y contribue
+			-- pareil, sans rien à changer ici).
+			local bestOverall = 0
+			for _, best in profile.stats.bestStreaks do
+				bestOverall = math.max(bestOverall, best)
+			end
+			LeaderboardService.UpdateScore("streak", "alltime", p.UserId, bestOverall)
+
+			local weeklyStreak = DataService.EnsureCurrentWeek(p)
+			if weeklyStreak and streak > weeklyStreak.bestStreak then
+				weeklyStreak.bestStreak = streak
+			end
+			if weeklyStreak then
+				LeaderboardService.UpdateScore("streak", "weekly", p.UserId, weeklyStreak.bestStreak)
+			end
 		end
 
 		local pts = isRealWin and PlayerConfig.POINTS.WINNER or PlayerConfig.POINTS.PARTICIPANT
-		DataService.AddGoofyPoints(p, pts)
+		award(p, pts)
 
 		if neverTouchedSet[p] then
-			DataService.AddGoofyPoints(p, PlayerConfig.POINTS.NEVER_TOUCHED)
+			award(p, PlayerConfig.POINTS.NEVER_TOUCHED)
 		end
 
 		if isRealWin then
@@ -217,6 +267,58 @@ function RoundRunner.RunRound(gamemode, players: { Player }, settings)
 		AchievementService.Check(p, profile, "round_played", { gamemode = gamemode.Name })
 	end
 
+	-- Résumé de fin de round pour l'écran client (voir EndScreen.client.luau) : classement des
+	-- PARTICIPANTS (pas tout le serveur), gagnants en tête puis triés par GP gagnés CE round.
+	do
+		local results = {}
+		for _, p in players do
+			if not p.Parent then continue end
+			table.insert(results, {
+				userId   = p.UserId,
+				name     = p.Name,
+				isWinner = (winnerSet[p] == true) and not voidedVictory,
+				-- Statut ACTUEL (clown/survivor/eliminated si le gamemode l'expose, ex. Clown
+				-- Survival) en priorité, sinon repli sur le rôle "de gagnant" (autres gamemodes).
+				role     = participantRoles[p] or winnerRoles[p],
+				gpEarned = roundGPEarned[p] or 0,
+			})
+		end
+		table.sort(results, function(a, b)
+			if a.isWinner ~= b.isWinner then return a.isWinner end
+			if a.gpEarned ~= b.gpEarned then return a.gpEarned > b.gpEarned end
+			return a.name < b.name
+		end)
+
+		-- Rôle du camp GAGNANT (ex. "clown"/"survivor" pour Clown Survival) pour que le titre de
+		-- l'écran de fin puisse préciser "VICTOIRE DES CLOWNS"/"VICTOIRE DES ENFANTS" plutôt qu'un
+		-- générique "VICTOIRE". nil si round vidé ou si le gamemode n'a pas de notion de rôle/camp.
+		local winningRole = nil
+		if not voidedVictory then
+			for _, w in winners do
+				-- participantRoles (statut ACTUEL) en priorité sur winnerRoles ici : winnerRoles
+				-- rétrograde volontairement les clowns infectés en cours de round à "survivor" pour
+				-- les stats/achievements (voir GetWinnerRoles), mais pour le TITRE de l'écran on
+				-- veut décrire objectivement quel camp a gagné la manche, pas l'éligibilité aux stats.
+				winningRole = participantRoles[w] or winnerRoles[w]
+				if winningRole then break end
+			end
+		end
+
+		local summary = {
+			gamemodeName = gamemode.Name,
+			reason       = reason,
+			voided       = voidedVictory,
+			winningRole  = winningRole,
+			results      = results,
+		}
+		for _, p in players do
+			if p.Parent then
+				RoundEndSummary:FireClient(p, summary)
+			end
+		end
+	end
+
+	LeaderboardService.Flush() -- écrit tout de suite les GP de fin de round (regroupés en temps normal, voir UpdateScore), sinon le Refresh juste après lirait des valeurs pas encore écrites
 	task.spawn(LeaderboardService.Refresh)
 
 	task.wait(5)

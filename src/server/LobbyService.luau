@@ -17,6 +17,7 @@ local RoundRunner        = require(script.Parent.RoundRunner)
 local GameSettings       = require(script.Parent.GameSettings)
 local MatchmakingService = require(script.Parent.MatchmakingService)
 local MatchmakingConfig  = require(script.Parent.MatchmakingConfig)
+local LeaderboardPodium  = require(script.Parent.LeaderboardPodium)
 
 local GameStatus = ReplicatedStorage:WaitForChild("GameStatus")
 
@@ -544,10 +545,12 @@ function LobbyService.Start(gamemodes)
 	-- Charge la map lobby si disponible
 	local venuesFolder = ServerStorage:FindFirstChild("Venues")
 	local lobbyModel   = venuesFolder and venuesFolder:FindFirstChild("Lobby")
+	local clonedLobby: Instance? = nil
 	if lobbyModel then
 		local cloned = lobbyModel:Clone()
 		cloned.Name = "_Lobby"
 		cloned.Parent = workspace
+		clonedLobby = cloned
 
 		-- Spawn points
 		local spawnFolder = cloned:FindFirstChild("SpawnPoints")
@@ -569,6 +572,10 @@ function LobbyService.Start(gamemodes)
 			end
 		end
 	end
+
+	-- Podium 3D des classements (voir LeaderboardPodium.luau) : utilise la Part "PodiumAnchor" de
+	-- la map Lobby si présente, sinon une position de repli fixe.
+	LeaderboardPodium.Build(clonedLobby)
 
 	-- Zones procédurales pour les gamemodes sans zone définie en Studio
 	local posIdx = 1
