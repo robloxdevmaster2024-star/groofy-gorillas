@@ -41,6 +41,7 @@ breathSound.Name = "ClownSurvivalExhaustionBreath"
 breathSound.SoundId = EXHAUSTION_BREATH_SOUND_ID
 breathSound.Looped = true
 breathSound.Volume = 0
+breathSound.SoundGroup = SoundService:WaitForChild("SFX") -- réglage volume perso (menu Profil)
 breathSound.Parent = SoundService
 
 -- ===== Vignette (4 bandes aux bords, sans asset image : UIGradient pour l'atténuation interne) =====

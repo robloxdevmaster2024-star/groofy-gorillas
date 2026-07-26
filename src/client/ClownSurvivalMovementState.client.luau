@@ -22,7 +22,10 @@ local sprintAvailableEvent = eventsFolder:WaitForChild("SprintAvailable") -- dis
 _G.ClownSurvivalMovementState = "idle"
 
 -- Petit indicateur de debug (coin haut-gauche, discret) pour visualiser les transitions d'état
--- en jeu. Purement indicatif ; à retirer facilement (ce bloc UI) si non désiré en prod.
+-- en jeu. Désactivé (masqué en prod) : mettre SHOW_DEBUG_INDICATOR à true pour le réafficher
+-- pendant un debug ponctuel.
+local SHOW_DEBUG_INDICATOR = false
+
 local gui = Instance.new("ScreenGui")
 gui.Name = "ClownSurvivalMovementStateDebug"
 gui.ResetOnSpawn = false
@@ -51,5 +54,5 @@ movementStateEvent.OnClientEvent:Connect(function(state: string)
 end)
 
 sprintAvailableEvent.OnClientEvent:Connect(function(active: boolean)
-	gui.Enabled = active
+	gui.Enabled = active and SHOW_DEBUG_INDICATOR
 end)

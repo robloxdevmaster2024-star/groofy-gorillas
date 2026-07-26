@@ -6,7 +6,16 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Lighting          = game:GetService("Lighting")
 local RunService        = game:GetService("RunService")
 local TweenService      = game:GetService("TweenService")
+local SoundService      = game:GetService("SoundService")
 local GameStatus = ReplicatedStorage:WaitForChild("GameStatus") -- créé par le RoundManager
+
+local PlayerConfig = require(
+	ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("PlayerConfig")
+)
+
+-- Groupe SFX (voir server/SoundGroups.server.luau) : permet au menu Profil client de régler le
+-- volume des effets sonores localement, sans toucher au son des autres joueurs.
+local sfxGroup = SoundService:WaitForChild("SFX")
 
 -- ===== RemoteEvents créés dès le chargement du module =====
 local eventsFolder = ReplicatedStorage:FindFirstChild("ClownSurvivalEvents")
@@ -40,6 +49,9 @@ local visionAvailableEvent = getOrCreate(eventsFolder, "VisionAvailable"); visio
 local visionRequestEvent   = getOrCreate(eventsFolder, "VisionRequest");   visionRequestEvent.Name   = "VisionRequest"
 local visionGrantedEvent   = getOrCreate(eventsFolder, "VisionGranted");   visionGrantedEvent.Name   = "VisionGranted"
 local movementStateEvent   = getOrCreate(eventsFolder, "MovementStateChanged"); movementStateEvent.Name = "MovementStateChanged"
+local rosterVisibleEvent   = getOrCreate(eventsFolder, "RosterVisible");   rosterVisibleEvent.Name   = "RosterVisible"
+local rosterUpdateEvent    = getOrCreate(eventsFolder, "RosterUpdate");    rosterUpdateEvent.Name    = "RosterUpdate"
+local statusScreenEvent    = getOrCreate(eventsFolder, "StatusScreen");    statusScreenEvent.Name    = "StatusScreen"
 
 local ClownSurvival = {}
 
@@ -88,6 +100,30 @@ local connections: { RBXScriptConnection } = {}
 local running = false
 local settings = ClownSurvival.DefaultSettings
 local savedLighting: { [string]: any }? = nil
+local roundStartTime = 0
+
+-- Nombre de coups réussis (contamination OU élimination) par clown pendant CE round — remonté à
+-- RoundRunner via GetKillCounts() avant Stop(), comme GetWinnerRoles(), pour être persisté en
+-- statistique globale (voir DataService.TEMPLATE.stats.totalClownKills). Le gamemode reste
+-- décorrélé de la persistance (comme partout ailleurs) : il expose juste le compte, c'est
+-- RoundRunner qui sait quoi en faire.
+local clownKills: { [Player]: number } = {}
+
+-- Récompenses d'action (voir RoundRunner.luau : ctx.AwardActionGP, appelé EN DIRECT pendant le
+-- round). awardActionGP est nil si le RoundRunner n'a pas fourni le callback (ne devrait pas
+-- arriver, mais pas de raison de planter le gamemode si jamais).
+local awardActionGP: ((Player, number) -> ())? = nil
+local firstBloodAwarded = false
+-- Paliers de survie déjà déclenchés CE round (voir PlayerConfig.POINTS.SURVIVAL_MILESTONES et
+-- stepSurvivalMilestones plus bas) : global au round, pas par joueur — un palier de temps
+-- s'applique à tous les survivants encore non-touchés au moment où il est atteint.
+local survivalMilestonesFired: { [number]: boolean } = {}
+
+-- Si LE DERNIER clown se déconnecte dans les toutes premières secondes du round, on ne veut pas
+-- juste déclarer les survivants gagnants pour une partie qui vient à peine de commencer (pas plus
+-- "réelle" qu'un round vidé côté RoundRunner, voir MIN_MEANINGFUL_ROUND_DURATION) : on préfère
+-- désigner d'urgence un survivant présent comme nouveau clown pour que la partie continue.
+local EMERGENCY_REINFECT_WINDOW = 20 -- s
 
 -- Combo de frappes : incrémenté par clown à chaque coup qui touche, remis à 1 si trop de temps
 -- s'est écoulé depuis le dernier coup. But : donner une récompense visuelle qui monte en flèche
@@ -205,6 +241,23 @@ local VISION_COOLDOWN = 35.0 -- s
 local dashing: { [Player]: any } = {} -- { direction, startTime }
 local lastDashUse: { [Player]: number } = {}
 local lastVisionUse: { [Player]: number } = {}
+
+-- Fenêtre de grâce anti-triche après un knockback : la vélocité d'impact reste largement au-dessus
+-- des plafonds normaux même une fois le ragdoll terminé (PlatformStand repassé à false), le temps
+-- qu'elle se dissipe naturellement (gravité/frottements). Sans ça, l'anti-triche la clampait
+-- instantanément au plafond "air"/"run", ce qui coupait net l'envol façon Smash Bros dès la fin du
+-- ragdoll.
+local KNOCKBACK_ANTICHEAT_GRACE = 1.5 -- s, en plus de la durée du ragdoll lui-même
+local knockbackGraceUntil: { [Player]: number } = {}
+
+-- Même principe pour TOUT changement d'état de déplacement vers un plafond plus bas (run→idle en
+-- relâchant les touches, run→prone en se couchant en pleine course, air→idle à l'atterrissage...) :
+-- `getMovementState` change de valeur instantanément dès que l'input/le contexte change, mais la
+-- vélocité horizontale réelle met un court instant à redescendre (le contrôleur Humanoid décélère
+-- progressivement vers le nouveau WalkSpeed, il ne coupe pas la vitesse net). Sans grâce,
+-- l'anti-triche clampait/avertissait cette vélocité résiduelle dès la frame du changement d'état.
+local STATE_TRANSITION_GRACE = 0.4 -- s
+local transitionGraceUntil: { [Player]: number } = {}
 
 -- ===== Anti-triche : centralisation des états de déplacement + validation de vitesse =====
 -- Un seul point de vérité pour "dans quel état de déplacement est ce joueur", réutilisé à la
@@ -363,6 +416,7 @@ local function playScreamSound(player: Player)
 	sound.RollOffMode = Enum.RollOffMode.InverseTapered
 	sound.RollOffMaxDistance = 120
 	sound.Volume = 1
+	sound.SoundGroup = sfxGroup
 	sound.Parent = hrp
 
 	sound.Ended:Once(function() sound:Destroy() end)
@@ -383,6 +437,7 @@ local function playTauntSound(player: Player)
 	sound.RollOffMode = Enum.RollOffMode.InverseTapered
 	sound.RollOffMaxDistance = 120
 	sound.Volume = 1
+	sound.SoundGroup = sfxGroup
 	sound.Parent = hrp
 
 	sound.Ended:Once(function() sound:Destroy() end)
@@ -405,6 +460,7 @@ local function playHitEffect(target: Player)
 	sound.RollOffMode = Enum.RollOffMode.InverseTapered
 	sound.RollOffMaxDistance = 80
 	sound.Volume = 1
+	sound.SoundGroup = sfxGroup
 	sound.Parent = hrp
 	sound.Ended:Once(function() sound:Destroy() end)
 	sound:Play()
@@ -677,6 +733,7 @@ local function applyKnockback(player: Player, direction: Vector3)
 	local duration = settings.knockbackStunDuration or 0.8
 
 	ragdollCharacter(char, duration, horizontal + vertical)
+	knockbackGraceUntil[player] = os.clock() + duration + KNOCKBACK_ANTICHEAT_GRACE
 end
 
 -- Gèle très brièvement la victime (HumanoidRootPart ancré) avant de lancer le knockback, pour un
@@ -936,13 +993,21 @@ local function stepStamina(dt: number)
 		-- ===== Anti-triche : état centralisé + validation de vitesse =====
 		local movementState = getMovementState(player)
 		if lastBroadcastState[player] ~= movementState then
+			-- Tout changement d'état ouvre une fenêtre de grâce (voir STATE_TRANSITION_GRACE) :
+			-- la vélocité réelle met un instant à rattraper le nouveau plafond, quel que soit le
+			-- sens de la transition (run→idle, run→prone, air→idle à l'atterrissage, etc.).
+			transitionGraceUntil[player] = os.clock() + STATE_TRANSITION_GRACE
 			lastBroadcastState[player] = movementState
 			movementStateEvent:FireClient(player, movementState)
 		end
 
 		-- Ragdoll/knockback (PlatformStand) : vélocité imposée intentionnellement très haute,
-		-- on ne valide pas pendant ce court instant pour ne pas annuler l'effet lui-même.
-		if not hum.PlatformStand then
+		-- on ne valide pas pendant ce court instant pour ne pas annuler l'effet lui-même. On
+		-- garde aussi une fenêtre de grâce après la fin du ragdoll (voir KNOCKBACK_ANTICHEAT_GRACE)
+		-- le temps que la vélocité redescende naturellement, sinon l'anti-triche coupe l'envol net.
+		local inKnockbackGrace = (knockbackGraceUntil[player] or 0) > os.clock()
+		local inTransitionGrace = (transitionGraceUntil[player] or 0) > os.clock()
+		if not hum.PlatformStand and not inKnockbackGrace and not inTransitionGrace then
 			local maxSpeed = (STATE_MAX_SPEED[movementState] or BASE_WALK_SPEED) * SPEED_TOLERANCE
 			local horizontalVelocity = Vector3.new(hrp.AssemblyLinearVelocity.X, 0, hrp.AssemblyLinearVelocity.Z)
 			local speed = horizontalVelocity.Magnitude
@@ -956,6 +1021,24 @@ local function stepStamina(dt: number)
 					"[Anti-triche] Vitesse anormale corrigée pour %s : %.1f > %.1f studs/s (état=%s)",
 					player.Name, speed, maxSpeed, movementState
 				))
+			end
+		end
+	end
+end
+
+-- Paliers de survie (voir PlayerConfig.POINTS.SURVIVAL_MILESTONES) : symétrique aux paliers de
+-- combo côté clown, mais global au round plutôt que par joueur — dès qu'un palier de temps est
+-- atteint, TOUS les survivants encore non-touchés à cet instant précis le reçoivent.
+local function stepSurvivalMilestones()
+	if not awardActionGP then return end
+	local elapsed = os.clock() - roundStartTime
+	for milestone, amount in PlayerConfig.POINTS.SURVIVAL_MILESTONES do
+		if elapsed >= milestone and not survivalMilestonesFired[milestone] then
+			survivalMilestonesFired[milestone] = true
+			for player in participants do
+				if player.Parent and not infected[player] and not eliminated[player] then
+					awardActionGP(player, amount)
+				end
 			end
 		end
 	end
@@ -1155,6 +1238,29 @@ local function computeMaxClowns(): number
 	return math.max(2, math.ceil(activePlayers * CLOWN_CAP_RATIO))
 end
 
+-- Liste consolidée clowns/enfants/éliminés (noms), envoyée au panneau roster de chaque joueur
+-- (ClownSurvivalRoster.client.luau). Pas d'info cachée ici : l'identité des clowns est déjà
+-- visible de tous via le Highlight rouge, ce panneau ne fait que la présenter en liste plutôt que
+-- d'obliger à repérer chaque joueur à l'œil.
+local function broadcastRoster()
+	local clowns, children, eliminatedNames = {}, {}, {}
+	for player in participants do
+		if player.Parent then
+			if infected[player] then
+				table.insert(clowns, player.Name)
+			elseif eliminated[player] then
+				table.insert(eliminatedNames, player.Name)
+			else
+				table.insert(children, player.Name)
+			end
+		end
+	end
+	table.sort(clowns)
+	table.sort(children)
+	table.sort(eliminatedNames)
+	rosterUpdateEvent:FireAllClients({ clowns = clowns, children = children, eliminated = eliminatedNames })
+end
+
 -- Élimine un joueur (plafond de clowns atteint) : il sort de la partie au lieu d'être contaminé.
 local function eliminatePlayer(player: Player, knockbackDir: Vector3?)
 	if eliminated[player] or infected[player] then return end
@@ -1167,6 +1273,8 @@ local function eliminatePlayer(player: Player, knockbackDir: Vector3?)
 	tauntAvailableEvent:FireClient(player, false) -- plus dans la partie, plus de bouton taunt
 	proneAvailableEvent:FireClient(player, false) -- plus dans la partie, plus de bouton se coucher
 	GameStatus:FireClient(player, { kind = "banner", text = "💀 Trop de clowns dans le parc, tu es éliminé !" })
+	statusScreenEvent:FireClient(player, "eliminated")
+	broadcastRoster()
 end
 
 -- Retourne true si la contamination a eu lieu, false si le plafond de clowns l'a empêchée
@@ -1192,6 +1300,39 @@ local function infectPlayer(player: Player, knockbackDir: Vector3?): boolean
 	dashAvailableEvent:FireClient(player, true)   -- capacités actives réservées AUX clowns
 	visionAvailableEvent:FireClient(player, true)
 	GameStatus:FireClient(player, { kind = "banner", text = "🤡 Tu es devenu un CLOWN ! Chasse les autres enfants !" })
+	statusScreenEvent:FireClient(player, "infected")
+	broadcastRoster()
+	return true
+end
+
+-- Désigne d'urgence un survivant au hasard comme nouveau clown quand le dernier clown vient de se
+-- déconnecter dans les toutes premières secondes du round (voir EMERGENCY_REINFECT_WINDOW) — la
+-- partie continue au lieu de se terminer pour une victoire qui n'a pas vraiment eu lieu. Marqué
+-- comme `originalClowns` (pas de sa faute d'être forcé dans ce rôle) : il reste éligible à la
+-- victoire finale du camp clown, comme n'importe quel clown de départ.
+local function promoteRandomSurvivorToClown(): boolean
+	local candidates: { Player } = {}
+	for p in participants do
+		if p.Parent and not infected[p] and not eliminated[p] then
+			table.insert(candidates, p)
+		end
+	end
+	if #candidates == 0 then return false end -- personne à infecter (round déjà terminé de toute façon)
+
+	local chosen = candidates[math.random(1, #candidates)]
+	infected[chosen] = true
+	originalClowns[chosen] = true
+	standUp(chosen)
+	applyInfectedLook(chosen)
+	grantWeapon(chosen)
+	tauntAvailableEvent:FireClient(chosen, false)
+	proneAvailableEvent:FireClient(chosen, false)
+	dashAvailableEvent:FireClient(chosen, true)
+	visionAvailableEvent:FireClient(chosen, true)
+	GameStatus:FireClient(chosen, { kind = "banner", text = "🤡 Il n'y a plus de clown dans la partie, tu es infecté !" })
+	GameStatus:FireAllClients({ kind = "banner", text = "🤡 Plus de clown en jeu — " .. chosen.Name .. " a été désigné clown d'urgence !" })
+	statusScreenEvent:FireClient(chosen, "infected")
+	broadcastRoster()
 	return true
 end
 
@@ -1208,12 +1349,39 @@ local function registerCombo(attacker: Player): number
 	return comboCount[attacker]
 end
 
+-- Bonus GP pour un combo donné : palier ATTEINT le plus haut, pas seulement une correspondance
+-- exacte. Un combo x4 (non défini) donne donc le bonus du palier x3, et tout combo au-delà du
+-- plus haut palier défini (x5) continue de donner le bonus du x5 indéfiniment — pas de "trou"
+-- entre les paliers ni de plafond dur qui arrête les récompenses passé un certain combo.
+local function getComboBonus(combo: number): number?
+	local bestMilestone: number? = nil
+	for milestone in PlayerConfig.POINTS.COMBO_MILESTONES do
+		if milestone <= combo and (not bestMilestone or milestone > bestMilestone) then
+			bestMilestone = milestone
+		end
+	end
+	return bestMilestone and PlayerConfig.POINTS.COMBO_MILESTONES[bestMilestone]
+end
+
 -- Trouve la victime la plus proche dans le cône de frappe devant le clown.
+--
+-- Le cône est évalué en 2D (plan horizontal), PAS avec le vecteur caméra 3D brut. Raison : de
+-- près (typiquement le cas le plus courant pour une frappe de mêlée), la caméra 3e personne doit
+-- pointer nettement vers le bas pour garder une cible proche à l'écran — cette inclinaison
+-- verticale fait chuter le produit scalaire même quand le clown est parfaitement aligné à
+-- l'horizontale avec sa cible, ce qui donnait des coups "qui ratent pour rien" alors que le
+-- joueur se sentait pile dessus. Une batte de baseball vise "devant le personnage", pas "dans
+-- l'axe exact du regard de la caméra" : seul l'alignement horizontal doit compter.
 local function findMeleeTarget(attacker: Player, aimDir: Vector3): Player?
 	local attackerHRP = getHRP(attacker)
 	if not attackerHRP then return nil end
 
 	local range = settings.meleeRange or 8
+
+	local aimFlat = Vector3.new(aimDir.X, 0, aimDir.Z)
+	if aimFlat.Magnitude < 0.01 then aimFlat = Vector3.new(0, 0, -1) end
+	aimFlat = aimFlat.Unit
+
 	local best: Player? = nil
 	local bestDist = math.huge
 
@@ -1224,8 +1392,12 @@ local function findMeleeTarget(attacker: Player, aimDir: Vector3): Player?
 				local offset = targetHRP.Position - attackerHRP.Position
 				local dist = offset.Magnitude
 				if dist <= range and dist > 0.01 then
-					local dot = aimDir:Dot(offset.Unit)
-					if dot >= MELEE_CONE_DOT and dist < bestDist then
+					local offsetFlat = Vector3.new(offset.X, 0, offset.Z)
+					-- Cible quasi à la verticale (rare, mais possible avec le knockback) : l'alignement
+					-- horizontal n'a pas vraiment de sens, on considère que c'est dans le cône.
+					local inCone = offsetFlat.Magnitude < 0.01
+						or aimFlat:Dot(offsetFlat.Unit) >= MELEE_CONE_DOT
+					if inCone and dist < bestDist then
 						best = target
 						bestDist = dist
 					end
@@ -1247,6 +1419,11 @@ function ClownSurvival.Start(ctx)
 	running = true
 	settings = ctx.Settings or ClownSurvival.DefaultSettings
 	roundId += 1
+	roundStartTime = os.clock()
+	clownKills = {}
+	awardActionGP = ctx.AwardActionGP
+	firstBloodAwarded = false
+	survivalMilestonesFired = {}
 
 	for _, player in ctx.Players do
 		participants[player] = true
@@ -1303,7 +1480,9 @@ function ClownSurvival.Start(ctx)
 			tauntAvailableEvent:FireClient(player, true)
 			proneAvailableEvent:FireClient(player, true)
 		end
+		rosterVisibleEvent:FireClient(player, true) -- panneau clowns/enfants/éliminés, réservé aux participants
 	end
+	broadcastRoster()
 
 	startScreamLoop(roundId)
 
@@ -1316,6 +1495,9 @@ function ClownSurvival.Start(ctx)
 
 	local staminaConn = RunService.Heartbeat:Connect(stepStamina)
 	table.insert(connections, staminaConn)
+
+	local survivalMilestonesConn = RunService.Heartbeat:Connect(stepSurvivalMilestones)
+	table.insert(connections, survivalMilestonesConn)
 
 	-- Écoute les demandes de sprint (le serveur reste seul juge : stamina, statut du joueur).
 	local sprintConn = setSprintingEvent.OnServerEvent:Connect(function(player, wantsSprint)
@@ -1534,18 +1716,43 @@ function ClownSurvival.Start(ctx)
 			-- Flash + lignes de vitesse : effet subjectif, uniquement sur l'écran de la victime.
 			hitFlashEvent:FireClient(target)
 
-			-- Combo du clown : récompense visuelle qui monte en flèche s'il enchaîne les coups.
-			comboUpdateEvent:FireClient(player, registerCombo(player))
+			-- Combo du clown : récompense visuelle qui monte en flèche s'il enchaîne les coups, et
+			-- bonus GP réel à chaque coup dès le palier x2 atteint (voir getComboBonus : palier le
+			-- plus haut ATTEINT, pas une correspondance exacte — combo x4 donne le bonus du x3,
+			-- combo x6+ continue de donner le bonus du x5). Redonné à chaque fois, y compris
+			-- plusieurs fois dans le même round si le combo retombe (COMBO_RESET_WINDOW) puis est
+			-- reconstruit — chaque palier représente un vrai combo relancé depuis zéro (portée
+			-- limitée, cooldown entre coups, survivants en nombre fini), pas un exploit à limiter.
+			local combo = registerCombo(player)
+			comboUpdateEvent:FireClient(player, combo)
+			local comboBonus = getComboBonus(combo)
+			if comboBonus and awardActionGP then
+				awardActionGP(player, comboBonus)
+			end
 
 			local attackerHRP = getHRP(player)
 			local targetHRP = getHRP(target)
 			local knockDir = attackerHRP and targetHRP
 				and (targetHRP.Position - attackerHRP.Position).Unit
 				or dir
-			if infectPlayer(target, knockDir) then
+			local converted = infectPlayer(target, knockDir)
+			if converted then
 				GameStatus:FireAllClients({ kind = "banner", text = target.Name .. " a été transformé en clown ! 🤡" })
 			elseif eliminated[target] then
 				GameStatus:FireAllClients({ kind = "banner", text = target.Name .. " a été éliminé ! 💀" })
+			end
+
+			-- Coup réussi (conversion OU élimination) : les deux comptent comme un "kill" pour le
+			-- clown, avec bonus GP immédiat + bonus "premier sang" une fois par round.
+			if converted or eliminated[target] then
+				clownKills[player] = (clownKills[player] or 0) + 1
+				if awardActionGP then
+					awardActionGP(player, PlayerConfig.POINTS.KILL)
+					if not firstBloodAwarded then
+						firstBloodAwarded = true
+						awardActionGP(player, PlayerConfig.POINTS.FIRST_BLOOD)
+					end
+				end
 			end
 		end
 	end)
@@ -1568,11 +1775,14 @@ function ClownSurvival.CheckWin()
 
 	-- Défense en profondeur : que ce soit par contamination, élimination ou déconnexions en
 	-- cascade, s'il ne reste plus qu'un seul joueur actif (ou aucun), la partie n'a plus de sens
-	-- à continuer. Le survivant restant gagne par défaut (comme "dernier debout" en Dodgeball) ;
-	-- s'il ne reste qu'un clown ou personne, il n'y a simplement pas de gagnant.
+	-- à continuer. Ce dernier joueur gagne par défaut (comme "dernier debout" en Dodgeball) —
+	-- qu'il soit survivant OU clown, symétrique dans les deux sens (aucune raison de faire gagner
+	-- un survivant isolé mais pas un clown isolé dans la même situation). S'il ne reste
+	-- littéralement personne (ou juste un éliminé), pas de gagnant.
 	local totalActive = #survivors + #infectors + eliminatedCount
 	if totalActive <= 1 then
-		return survivors, "Plus assez de joueurs pour continuer la partie !"
+		local lastStanding = (#survivors > 0) and survivors or infectors
+		return lastStanding, "Plus assez de joueurs pour continuer la partie !"
 	end
 
 	if #infectors == 0 then return survivors, "Plus de clowns en jeu !" end
@@ -1611,7 +1821,29 @@ function ClownSurvival.GetWinnerRoles(winners: { Player })
 	return roles
 end
 
+-- Appelé par RoundRunner avant Stop() pour persister le nombre de coups réussis par clown de ce
+-- round (voir clownKills plus haut).
+function ClownSurvival.GetKillCounts(): { [Player]: number }
+	return table.clone(clownKills)
+end
+
+-- Appelé par RoundRunner avant Stop() pour le bonus "jamais touché" (voir
+-- PlayerConfig.POINTS.NEVER_TOUCHED) : l'infection est permanente pour le reste du round (pas de
+-- "guérison"), donc tout participant encore ni infecté ni éliminé à cet instant n'a, par
+-- construction, JAMAIS été touché de tout le round — pas besoin d'un tracking séparé.
+function ClownSurvival.GetNeverTouchedSurvivors(): { Player }
+	local survivors = {}
+	for player in participants do
+		if player.Parent and not infected[player] and not eliminated[player] then
+			table.insert(survivors, player)
+		end
+	end
+	return survivors
+end
+
 function ClownSurvival.OnPlayerRemoving(player)
+	local wasActiveClown = running and infected[player] == true
+
 	participants[player] = nil
 	infected[player] = nil
 	eliminated[player] = nil
@@ -1637,6 +1869,19 @@ function ClownSurvival.OnPlayerRemoving(player)
 	lastDashUse[player] = nil
 	lastVisionUse[player] = nil
 	lastBroadcastState[player] = nil
+	knockbackGraceUntil[player] = nil
+	transitionGraceUntil[player] = nil
+	-- clownKills[player] volontairement PAS nettoyé ici : RoundRunner lit GetKillCounts() en fin
+	-- de round pour créditer les coups déjà portés par ce joueur avant son départ.
+
+	local promoted = false
+	if running and wasActiveClown and countActiveClowns() == 0
+		and (os.clock() - roundStartTime) < EMERGENCY_REINFECT_WINDOW then
+		promoted = promoteRandomSurvivorToClown()
+	end
+	if running and not promoted then
+		broadcastRoster()
+	end
 end
 
 function ClownSurvival.Stop()
@@ -1666,6 +1911,7 @@ function ClownSurvival.Stop()
 	sprintAvailableEvent:FireAllClients(false)
 	dashAvailableEvent:FireAllClients(false)
 	visionAvailableEvent:FireAllClients(false)
+	rosterVisibleEvent:FireAllClients(false)
 	restoreAtmosphere()
 
 	participants, infected, eliminated, originalClowns, lastSwing, lastTaunt, batRigs = {}, {}, {}, {}, {}, {}, {}

@@ -9,6 +9,10 @@ local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
 local gui = Instance.new("ScreenGui")
 gui.Name = "GoofyStatus"
 gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true -- cohérent avec les autres GUI (Leaderboard/Profil/Roster) : sans ça, le
+                          -- timer était positionné par rapport à la zone sous la barre native
+                          -- Roblox au lieu du vrai coin d'écran, et finissait par chevaucher le
+                          -- bouton "Effectifs de la partie" selon la plateforme/résolution
 gui.Parent = playerGui
 
 -- Bandeau d'annonces (centre haut)
@@ -26,16 +30,19 @@ banner.Visible = false
 banner.Parent = gui
 Instance.new("UICorner", banner).CornerRadius = UDim.new(0, 14)
 
--- Timer (coin haut droit)
+-- Timer (coin haut droit) — aligné sur la même rangée que les autres boutons haut-droite
+-- (Effectifs de la partie) pour rester sous la barre native Roblox, quelle que soit la plateforme.
 local timer = Instance.new("TextLabel")
 timer.AnchorPoint = Vector2.new(1, 0)
-timer.Position = UDim2.new(1, -16, 0, 16)
+timer.Position = UDim2.new(1, -16, 0, 74)
 timer.Size = UDim2.new(0, 120, 0, 44)
 timer.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
 timer.BackgroundTransparency = 0.25
 timer.TextColor3 = Color3.fromRGB(255, 230, 120)
-timer.TextScaled = true
 timer.Font = Enum.Font.FredokaOne
+timer.TextSize = 28 -- taille fixe : avec TextScaled, la police grossissait/rétrécissait selon le
+                     -- nombre de chiffres restants (ex. "150s" vs "5s"), un compteur ne doit pas
+                     -- changer de taille au fil du temps
 timer.Text = ""
 timer.Visible = false
 timer.Parent = gui

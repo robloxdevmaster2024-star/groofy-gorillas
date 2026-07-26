@@ -36,8 +36,17 @@ local TEMPLATE = {
 	achievements   = {},
 	bestTimes      = {},
 	stats = {
-		gamesPlayed = 0,
-		gamesWon    = 0,
+		gamesPlayed     = 0,
+		gamesWon        = 0,
+		winStreaks      = {}, -- [gamemodeName] = streak de victoires consécutives en cours
+		bestStreaks     = {}, -- [gamemodeName] = meilleur streak jamais atteint
+		clownWins       = 0,  -- Clown Survival : victoires en tant que clown
+		survivorWins    = 0,  -- Clown Survival : victoires en tant qu'enfant
+		totalClownKills = 0,  -- Clown Survival : coups réussis (contamination OU élimination) en tant que clown, tous rounds confondus
+	},
+	settings = {
+		musicVolume = 0.5,
+		sfxVolume   = 0.5,
 	},
 }
 
@@ -47,6 +56,18 @@ local playerStore = ProfileStoreModule.New(STORE_KEY, TEMPLATE)
 local DataUpdated = Instance.new("RemoteEvent")
 DataUpdated.Name  = "DataUpdated"
 DataUpdated.Parent = ReplicatedStorage
+
+-- RemoteFunction : le client récupère un instantané complet de son profil (menu Profil)
+local GetProfileSnapshot = Instance.new("RemoteFunction")
+GetProfileSnapshot.Name   = "GetProfileSnapshot"
+GetProfileSnapshot.Parent = ReplicatedStorage
+
+-- RemoteEvent : le client pousse un changement de préférence perso (volume musique/SFX)
+local UpdatePlayerSettings = Instance.new("RemoteEvent")
+UpdatePlayerSettings.Name   = "UpdatePlayerSettings"
+UpdatePlayerSettings.Parent = ReplicatedStorage
+
+local VALID_SETTINGS_KEYS = { musicVolume = true, sfxVolume = true }
 
 -- ===== État =====
 
@@ -109,6 +130,50 @@ function DataService.GetNextThreshold(player)
 	if not profile then return nil end
 	return PlayerConfig.LEVEL_THRESHOLDS[profile.Data.level + 1]
 end
+
+-- Instantané "sûr" (pas la table brute du profil) pour le menu Profil client : niveau/xp, stats,
+-- succès débloqués (juste les ids, la description vit déjà dans AchievementsConfig côté client),
+-- réglages perso. Volontairement pas de cosmétiques (système pas encore décidé, voir ROADMAP).
+function DataService.GetProfileSnapshot(player)
+	local profile = profiles[player]
+	if not profile then return nil end
+	local data = profile.Data
+
+	local unlockedAchievements = {}
+	for id, unlocked in data.achievements do
+		if unlocked then table.insert(unlockedAchievements, id) end
+	end
+
+	return {
+		goofyPoints       = data.goofyPoints,
+		level             = data.level,
+		currentThreshold  = PlayerConfig.LEVEL_THRESHOLDS[data.level] or 0,
+		nextThreshold     = PlayerConfig.LEVEL_THRESHOLDS[data.level + 1], -- nil si niveau max
+		gamesPlayed       = data.stats.gamesPlayed,
+		gamesWon          = data.stats.gamesWon,
+		winStreaks        = data.stats.winStreaks,
+		bestStreaks       = data.stats.bestStreaks,
+		clownWins         = data.stats.clownWins,
+		survivorWins      = data.stats.survivorWins,
+		totalClownKills   = data.stats.totalClownKills,
+		unlockedAchievements = unlockedAchievements,
+		settings          = data.settings,
+	}
+end
+
+GetProfileSnapshot.OnServerInvoke = function(player)
+	return DataService.GetProfileSnapshot(player)
+end
+
+UpdatePlayerSettings.OnServerEvent:Connect(function(player, key, value)
+	if type(key) ~= "string" or not VALID_SETTINGS_KEYS[key] then return end
+	if type(value) ~= "number" then return end
+
+	local profile = profiles[player]
+	if not profile then return end
+
+	profile.Data.settings[key] = math.clamp(value, 0, 1)
+end)
 
 function DataService.AddGoofyPoints(player, amount)
 	local profile = profiles[player]

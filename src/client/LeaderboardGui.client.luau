@@ -10,6 +10,11 @@ local localPlayer = Players.LocalPlayer
 local eventsFolder = ReplicatedStorage:WaitForChild("LeaderboardEvents")
 local lbEvent      = eventsFolder:WaitForChild("Board")
 
+local PanelCoordinator = require(
+	ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("PanelCoordinator")
+)
+local PANEL_ID = "leaderboard"
+
 -- ===== Constantes UI =====
 local PANEL_W   = 400
 local PANEL_H   = 460
@@ -72,7 +77,7 @@ closeBtn.BackgroundColor3  = Color3.fromRGB(90, 40, 40)
 closeBtn.Font              = Enum.Font.GothamBold
 closeBtn.TextSize          = 16
 closeBtn.TextColor3        = Color3.fromRGB(255, 200, 200)
-closeBtn.Text              = "✕"
+closeBtn.Text              = "X"
 closeBtn.AutoButtonColor   = true
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
 
@@ -145,7 +150,8 @@ hintLabel.Text               = "Tab  •  fermer"
 local toggleBtn = Instance.new("TextButton", screenGui)
 toggleBtn.Name             = "ToggleBtn"
 toggleBtn.Size             = UDim2.new(0, 42, 0, 42)
-toggleBtn.Position         = UDim2.new(0, 14, 0, 74)
+-- Décalé à droite du bouton "👤 Profil" (ProfileMenu.client.luau, à 0,14,0,74) pour ne pas se superposer.
+toggleBtn.Position         = UDim2.new(0, 64, 0, 74)
 toggleBtn.BackgroundColor3 = Color3.fromRGB(40, 36, 20)
 toggleBtn.Font             = Enum.Font.GothamBold
 toggleBtn.TextSize         = 22
@@ -229,6 +235,7 @@ end
 -- ===== Toggle =====
 local function setVisible(v: boolean)
 	panel.Visible = v
+	if v then PanelCoordinator.NotifyOpened(PANEL_ID) end
 end
 local function toggle()
 	setVisible(not panel.Visible)
@@ -236,6 +243,14 @@ end
 
 toggleBtn.MouseButton1Click:Connect(toggle)
 closeBtn.MouseButton1Click:Connect(function() setVisible(false) end)
+
+-- Un AUTRE panneau (Profil, Effectifs de la partie...) vient de s'ouvrir : le nôtre se ferme s'il
+-- était affiché, pour ne pas empiler deux panneaux centrés l'un sur l'autre.
+PanelCoordinator.OnPanelOpened(function(openedId)
+	if openedId ~= PANEL_ID and panel.Visible then
+		panel.Visible = false
+	end
+end)
 
 UserInputService.InputBegan:Connect(function(input, processed)
 	if processed then return end

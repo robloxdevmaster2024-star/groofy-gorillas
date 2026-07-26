@@ -89,11 +89,12 @@ Phase 2 complète ✅. Cosmétiques restants. Lobby hub implémenté (hors roadm
 - [x] Remplacer la contamination par proximité par une **arme batte de baseball** (hitbox serveur, swing via cône de portée `meleeRange`/`MELEE_CONE_DOT`)
       - `ClownSurvivalEvents.Swing` (client → serveur, LookVector caméra) + `ClownSurvivalEvents.SetActive` (serveur → client, active/désactive le bouton de frappe)
       - `ClownSurvivalInput.client.luau` : clic gauche PC + bouton mobile dédié 🏏
+      - **Fix coups qui ratent de près** : `findMeleeTarget` comparait le cône en 3D brut (LookVector caméra vs position cible) — de près, la caméra 3e personne doit pointer vers le bas pour garder une cible proche à l'écran, ce qui faisait chuter le produit scalaire même parfaitement aligné à l'horizontale. Le cône est maintenant évalué en 2D (plan horizontal uniquement, `aimFlat`/`offsetFlat`), plus fidèle à "une batte vise devant le personnage" qu'à l'angle exact du regard.
 - [x] **Batte physique + animation de swing** : `Motor6D` soudé à la main (R15/R6), animation Heartbeat aller-retour vers la pose de frappe
 - [x] **Knockback + ragdoll R15** façon Smash Bros
       - `applyKnockback()` → `ragdollCharacter()` : chaque `Motor6D` détaché (`Part0 = nil`) et remplacé par une `BallSocketConstraint` libre, vélocité d'impact + rotation aléatoire appliquées à chaque membre, restauré après `knockbackStunDuration`
 - [x] **Bouton taunt** (réservé aux survivants) : touche F (PC) / tap (mobile), son de rire, cooldown anti-spam — `ClownSurvivalEvents.Taunt`/`TauntAvailable`
-- [x] Passer `RoundDuration` de 90 à **300** (5 min)
+- [x] Passer `RoundDuration` de 90 à 300 (5 min), puis redescendu à **180 (3 min)** par la suite (valeur actuelle du code — la mention "300/5 min" avait fini par ne plus refléter la réalité, corrigé ici et dans `CLAUDE.md` § 1.bis)
 - [x] Reskin visuel minimal : highlight clown (rose/rouge), banners re-thémés 🤡, ambiance sombre via `Lighting` (ClockTime minuit, ambient sombre, fog) restaurée au `Stop()`
 - [x] Win conditions (`CheckWin`/`ResolveTimeout`) inchangées et cohérentes (rôles clown/enfant = infecté/survivant)
 - [x] Renommage complet **Infector → Clown Survival** (fichiers, module, events, achievements, docs)
@@ -110,10 +111,49 @@ Phase 2 complète ✅. Cosmétiques restants. Lobby hub implémenté (hors roadm
       - Glissade pilotable elle aussi pendant son déroulé (`SLIDE_TURN_RATE`, même principe que le dash).
 - [x] **Anti-triche mouvement** : état de déplacement centralisé côté serveur (`getMovementState` → `idle`/`run`/`slide`/`prone`/`air`/`dash`, seule source de vérité), réutilisé à la fois pour la priorité de `WalkSpeed` et pour un plafond de vitesse légitime par état (`STATE_MAX_SPEED` + marge `SPEED_TOLERANCE`). Toute vitesse horizontale au-delà du plafond (speed-hack potentiel) est automatiquement ramenée à la limite (composante verticale intacte), avec un `warn()` serveur pour visibilité. Le ragdoll/knockback (`Humanoid.PlatformStand`) est exempté du contrôle (vélocité imposée légitime). État diffusé au client concerné (`MovementStateChanged`) pour une machine à états propre côté client aussi — `ClownSurvivalMovementState.client.luau` (inclut un petit indicateur de debug coin haut-gauche, facilement retirable).
       - À valider : jouer avec un exploit de vitesse connu (ou un script de test) pour confirmer que la correction se déclenche sans faux-positifs en jeu normal (marge `SPEED_TOLERANCE` à ajuster si besoin).
+      - Fenêtres de grâce anti faux-positif : après un knockback (`KNOCKBACK_ANTICHEAT_GRACE`, 1.5s, cas à part vu l'ampleur de la vélocité imposée) et, plus généralement, à **chaque changement d'état de déplacement** (`STATE_TRANSITION_GRACE`, 0.4s — run→idle, run→prone, air→idle à l'atterrissage, etc.) : `getMovementState` change de valeur instantanément mais la vélocité réelle met un court instant à rattraper le nouveau plafond (décélération progressive du contrôleur Humanoid), sans quoi l'anti-triche la clampait/avertissait dès la frame du changement.
       - Étendu au **hub** (`LobbyService.luau`, `stepHubAntiCheat`) : version simplifiée (pas de sprint/glissade dans le hub) qui plafonne la vitesse horizontale (`HUB_MAX_HORIZONTAL` = WalkSpeed par défaut + marge) ET la vitesse verticale montante (`HUB_MAX_UPWARD_SPEED = 60`, bien au-dessus d'un saut normal) pour bloquer speed-hacks et fly-hacks basiques. Ignore les joueurs déjà en partie (gérés par l'anti-triche du round) et le ragdoll (`PlatformStand`).
 - [ ] *(non fait)* **Vraie animation de rampement/couché** — actuellement juste un rétrécissement du corps (HipHeight/BodyHeightScale), pas une posture couchée visuelle. Nécessite soit une vraie animation key-framée (Blender ou éditeur d'animation Roblox, uploadée avec un ID) jouée via Animator — je peux écrire tout le code de lecture, mais pas créer l'animation elle-même (asset) — soit, en alternative 100% scriptable mais plus rigide, faire pivoter tout le personnage à l'horizontale. Décision reportée à plus tard.
 - [ ] *(non fait)* Ambiance sonore (SFX du rire du bouton taunt à remplacer par un vrai asset) et modèle 3D de batte/clown — nécessite assets, hors scope code
+- [x] **Écran "WASTED" (façon GTA)** à l'infection/élimination (`ClownSurvivalStatusScreen.client.luau`) : fondu vers le noir + désaturation d'écran (`ColorCorrectionEffect`) + gros texte "INFECTÉ"/"ÉLIMINÉ" qui apparaît en se resserrant (zoom-out), affiché uniquement au joueur concerné (`ClownSurvivalEvents.StatusScreen`, déclenché depuis `infectPlayer`/`eliminatePlayer`).
+- [x] **Panneau "🎪 Effectifs de la partie"** (bouton 📋 haut-droite, `ClownSurvivalRoster.client.luau`) : liste en direct des Clowns 🤡 / Enfants 🧒 / Éliminés 💀 par nom, mise à jour à chaque contamination/élimination/déconnexion. Pas d'info cachée (l'identité clown est déjà visible via le Highlight), juste une vue consolidée. Bouton visible uniquement pour les participants du round (`RosterVisible`), pas pour les joueurs restés au lobby — `broadcastRoster()`/`RosterUpdate` côté `ClownSurvival.luau`.
+      - **Fix overlap avec le chrono** : `StatusHud.client.luau` ne mettait pas `IgnoreGuiInset = true` (contrairement aux autres GUI), donc son timer était positionné sous la barre native Roblox au lieu du vrai coin d'écran — chevauchait le bouton du roster selon la plateforme. Timer et bouton alignés sur la même rangée (y=74) haut-droite.
+      - **Coordination des panneaux** (`shared/UI/PanelCoordinator.luau`, nouveau) : Classement global / Profil / Effectifs de la partie sont tous centrés au même endroit — en ouvrir un ferme désormais automatiquement les autres s'ils étaient affichés, pour ne pas les empiler.
 - [ ] *(non fait)* Vérifier en Studio (2 clients) que le knockback/ragdoll ne propulse pas les joueurs hors des maps existantes
+
+---
+
+## Animation manuelle du swing de batte (remplacement du Heartbeat/Lerp) `[~]` — ⏸️ SUSPENDU (bloqué sur Studio, pas du code)
+
+> **Objectif** : remplacer l'animation procédurale actuelle (`stepBatAnimations()`, CFrame Lerp à
+> chaque Heartbeat, `ClownSurvival.luau` lignes ~262-420 et ~831-849) par une vraie animation
+> key-framée dans l'**Animation Editor** de Roblox Studio, publiée en asset et jouée via
+> `Animator:LoadAnimation`. Rien à faire côté code tant que l'asset n'existe pas.
+
+**Où ça bloque** : en essayant de souder la batte (`Baseball Bat With Spike`) à la main droite
+d'un rig de test (Motor6D `BatGrip`, `Part0 = RightHand`, `Part1 = handle de la batte`, créé via
+script Command Bar) pour pouvoir l'animer dans l'Animation Editor, la batte ne bouge plus du
+tout — ni rotation ni translation — alors même que `BatGrip` apparaît bien dans la liste des
+joints sous `RightHand`. Symptôme précis : sélectionner la batte + appuyer sur Rotate affiche le
+gizmo ~0.2s puis il disparaît (la pose revient en arrière) — signature typique d'**un second
+joint en concurrence** qui réécrase `BatGrip` à chaque frame.
+
+**Piste la plus probable (pas encore confirmée)** : la batte a été insérée comme **Accessory**
+Roblox (`Handle` + `Attachment`s type `RightGripAttachment`) — Studio maintient alors
+automatiquement un `Weld`/`AccessoryWeld` séparé en plus du `BatGrip` manuel, et les deux se
+battent pour la CFrame de la même part. Script de diagnostic (à lancer dans le Command Bar avant
+de reprendre) donné en session — cherche tout `Weld`/`WeldConstraint`/`Motor6D`/`Motor`
+supplémentaire connecté aux parts de la batte ou à `RightHand`, et vérifie `bat.ClassName` (si
+`"Accessory"`, sortir les meshes du wrapper Accessory vers un `Model` simple).
+
+**Pour reprendre** :
+1. Lancer le script de diagnostic (liste tous les joints présents sur la batte + RightHand).
+2. Si un `Weld`/`AccessoryWeld` en trop apparaît → le supprimer, ne garder que `BatGrip`.
+3. Si `bat.ClassName == "Accessory"` → convertir en `Model` simple avant de re-souder.
+4. Une fois la batte pilotable, animer dans l'Animation Editor (épaule + coude R15, `BatGrip`
+   pour le snap de poignet), publier → récupérer l'`rbxassetid`.
+5. Revenir vers moi avec l'ID publié pour brancher `Animator:LoadAnimation` côté serveur et
+   retirer `stepBatAnimations()`.
 
 ---
 
@@ -125,6 +165,15 @@ Phase 2 complète ✅. Cosmétiques restants. Lobby hub implémenté (hors roadm
       - DataService : UpdateScore au chargement + après AddGoofyPoints
       - RoundManager : Refresh après attribution des GP de fin de round
       - ⚠️ Time Trial = « plus bas gagne » → stocker en négatif / inverser à l'affichage (Phase 4)
+- [x] **Menu Profil** (bouton 👤 haut-gauche, `ProfileMenu.client.luau`) : panneau à onglets Profil (niveau/XP + barre de progression, Goofy Points, victoires/parties jouées totales, séries de victoires **par gamemode** avec record), Succès (débloqués uniquement, icône/nom/desc via `AchievementsConfig`), Cosmétiques (placeholder "bientôt disponible", système pas encore décidé), Réglages (volume musique/SFX perso, boutons +/− par pas de 10%, appliqué localement via `SoundGroup` + persisté serveur)
+      - `DataService.luau` : `GetProfileSnapshot` (RemoteFunction, instantané filtré du profil) + `UpdatePlayerSettings` (RemoteEvent, clamp 0..1 côté serveur) ; TEMPLATE étendu avec `stats.winStreaks`/`stats.bestStreaks` (par gamemode) et `settings.musicVolume`/`settings.sfxVolume`
+      - `RoundRunner.luau` : calcule le streak par gamemode à la fin de chaque round (incrémenté sur victoire, remis à 0 sur défaite, `bestStreaks` garde le record)
+      - `SoundGroups.server.luau` (nouveau) : crée les `SoundGroup` globaux `Music`/`SFX` sous `SoundService` ; tous les `Sound` de Clown Survival (cri, rire, impact batte) + la respiration d'épuisement y sont routés pour que le réglage ait un effet
+      - ⚠️ *Non fait* : aucune musique d'ambiance ne joue encore dans le jeu — le slider "Volume musique" est fonctionnel/persisté mais inerte tant qu'aucun `Sound` n'est routé dans le groupe `Music`
+      - **Récompenses d'action en direct (Clown Survival)** — GP accordés pendant le round, pas juste à la fin : +5 GP par kill (`POINTS.KILL`), +10 GP "premier sang" (`POINTS.FIRST_BLOOD`, une fois par round), bonus de combo dès x2 (`POINTS.COMBO_MILESTONES` = x2→5, x3→10, x5→20), donné à CHAQUE coup dès que le palier est atteint — pas juste une fois : un combo x4 donne le bonus du x3 (palier le plus haut atteint), x6+ continue de donner le bonus du x5 indéfiniment (`getComboBonus`) ; côté survivant, symétrique avec des **paliers de survie dans le temps** (`POINTS.SURVIVAL_MILESTONES` : toutes les 30s, 5 GP sur la 1ère moitié du round (0-90s), 10 GP sur la 2ᵉ moitié (90-180s), `stepSurvivalMilestones` en Heartbeat) — global au round (pas par joueur), donné à TOUS les survivants encore non-touchés au moment où le palier de temps est atteint, +15 GP survivant "jamais touché" (`POINTS.NEVER_TOUCHED`, calculé automatiquement en fin de round — l'infection étant permanente, tout participant encore non-infecté/non-éliminé à la fin n'a par construction jamais été touché). Toutes restent dues même si la victoire finale du round est vidée (actions réelles, pas un bonus de victoire).
+            - `RoundRunner.luau` injecte `ctx.AwardActionGP(player, amount)` dans le contexte du round : le gamemode reste décorrélé de `DataService`/ProfileStore (comme partout ailleurs), il ne voit que ce callback. `ClownSurvival.GetNeverTouchedSurvivors()` (même pattern que `GetWinnerRoles`/`GetKillCounts`) pour le bonus de fin de round.
+      - **Stats par rôle (Clown Survival)** : `stats.clownWins`/`stats.survivorWins` (incrémentées dans `RoundRunner.luau` via `GetWinnerRoles`, seulement sur une victoire "réelle") et `stats.totalClownKills` (une action DANS la partie, créditée même si la victoire finale est vidée) — `ClownSurvival.luau` expose `GetKillCounts()` (même pattern que `GetWinnerRoles()`) pour rester décorrélé de la persistance.
+      - **Onglet Profil réorganisé par mode** : la section générique "Séries de victoires par mode" a été remplacée par un bloc par gamemode déjà joué — titre = nom du mode (ex. "CLOWN SURVIVAL", sans emoji), et en dessous les détails propres à ce mode. Pour Clown Survival : Victoire en tant que clown / en tant qu'enfant (sans emoji), Éliminations, Série de victoires (actuelle + record). Tout mode sans stats dédiées retombe sur juste la série de victoires en attendant. **Convention à suivre pour tout nouveau gamemode** : lui donner le même traitement dans `ProfileMenu.client.luau` (`rebuildModesSection`) — un titre + ses lignes de détail pertinentes, sur ce modèle.
 - [ ] **Cosmétiques** : modèle layered clothing vs accessoires classiques *(décision en attente)*
       - shop + équipement **serveur** (anti-triche) + aperçu client
 - [x] **Achievements + easter eggs** (flags persistés)
@@ -134,6 +183,13 @@ Phase 2 complète ✅. Cosmétiques restants. Lobby hub implémenté (hors roadm
       - `ClownSurvival.GetWinnerRoles()` : distingue clown vs survivant pour achievements ciblés
       - DataService : champ `stats { gamesPlayed, gamesWon }` ajouté au template + Check après GP
       - RoundManager : incrémente stats, Check "round_win" (avec rôle) et "round_played" après chaque round
+- [x] **Fix dérive du chrono affiché** — `RoundRunner.luau` calculait le temps restant en comptant les itérations d'une boucle `for ... do task.wait(1) ... end` : `task.wait(1)` ne garantit jamais exactement 1s (léger dépassement à chaque appel), et ça s'accumulait au fil du round (~3s de dérive constatée vers 60s, plus au fil du temps) — le chrono affiché n'était plus synchro avec le temps réel, ni avec les récompenses de survie de `ClownSurvival.luau` (elles basées sur `os.clock()` en continu, donc déjà précises). Le chrono est maintenant recalculé à chaque tick à partir du temps réel écoulé (`os.clock() - loopStartTime`) plutôt que du compteur d'itérations.
+- [x] **Victoires "vidées" (rounds avortés par déconnexions)** — `RoundRunner.luau`, générique (tous gamemodes) :
+      - Une fin de round PRÉCOCE (via `CheckWin`, pas un timeout normal) où **plus de 50% des participants du round** (`VOID_DISCONNECT_RATIO`) sont partis ET où le round a duré **moins de 20s** (`MIN_MEANINGFUL_ROUND_DURATION`) est traitée comme une victoire vidée — la partie ne s'est pas vraiment jouée.
+      - Vidée : pas de bonus GP vainqueur, pas d'incrément `gamesWon`, série de victoires par gamemode gelée (ni incrémentée ni remise à 0), pas de succès "round_win". Conservé : GP de **participation** (15) pour ceux restés jusqu'au bout, `gamesPlayed`, succès "round_played" — ce n'est pas leur faute si la partie s'est vidée.
+      - Une victoire rapide mais légitime (personne n'est parti) n'est PAS pénalisée : les deux conditions (durée courte + déconnexions massives) doivent être réunies.
+      - `ClownSurvival.CheckWin()` : fix symétrie — un clown seul restant (tout le monde parti) gagne désormais par défaut, comme c'était déjà le cas pour un survivant seul restant.
+- [x] **Clown d'urgence** si le dernier clown se déconnecte tôt dans le round (`ClownSurvival.luau`, `EMERGENCY_REINFECT_WINDOW = 20s`) : au lieu de finir la partie (victoire survivants non "réelle"), un survivant présent est désigné au hasard nouveau clown (`promoteRandomSurvivorToClown`) — banner dédié pour lui ("Il n'y a plus de clown dans la partie, tu es infecté !") et pour tout le monde. Marqué `originalClowns` (pas de sa faute d'être forcé dans ce rôle), reste éligible à la victoire finale du camp clown. Passé les 20 premières secondes, un clown qui se déconnecte termine la partie normalement (survivants gagnants).
 
 ---
 
@@ -219,5 +275,5 @@ Phase 2 complète ✅. Cosmétiques restants. Lobby hub implémenté (hors roadm
       - `profile:AddUserId()` (conformité GDPR) + `profile:Reconcile()` (comble les champs ajoutés au TEMPLATE après coup) à chaque chargement.
       - `profile.OnSessionEnd` → si un autre serveur vole la session, le joueur est **kick** avec message clair (cas limite après épuisement des tentatives internes de `StartSessionAsync`, pas le chemin normal).
       - Store renommé `GoofyGorillas_v1` → `GoofyGorillas_v2` : nouveau format (décision assumée avec l'utilisateur — pas de données de test réelles à préserver, on repart à zéro).
-- [ ] *(à tester en jeu)* Rejoindre/quitter plusieurs fois de suite pour valider "les données survivent à un rejoin" ET observer l'Output pour confirmer qu'aucun warning DataStore n'apparaît (critère de validation).
-- [ ] *(à tester)* Le cas session-lock lui-même (ouvrir 2 sessions Studio "Test → Clients and Servers" avec le même compte, ou simuler un rejoin très rapide) pour confirmer le comportement d'attente/retry.
+- [x] *(testé en jeu)* Rejoindre/quitter plusieurs fois de suite : Goofy Points/niveau survivent bien à un rejoin.
+- [ ] *(non testé, décision assumée)* Cas session-lock (2 sessions simultanées sur le même compte) — **pas testable facilement en Studio** : "Test → Clients and Servers" charge systématiquement des comptes de test différents à chaque client, impossible de simuler 2 sessions du même joueur sans un vrai test en jeu publié (2 fenêtres connectées au même compte). Reporté ; le code (`StartSessionAsync` + retries internes de ProfileStore) est en place et considéré fiable (comportement documenté de la librairie), juste non vérifié manuellement.

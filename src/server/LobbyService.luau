@@ -72,8 +72,14 @@ local playerZone : { [Player]: string? } = {}
 -- joueurs ayant rejoint la file via le bouton "Jouer" (pas de position à vérifier)
 local queuedViaButton : { [Player]: boolean } = {}
 
--- joueurs actuellement en partie (round en cours) : interdit de rejoindre une nouvelle file
-local playersInRound : { [Player]: boolean } = {}
+-- joueurs actuellement en partie (round en cours) : interdit de rejoindre une nouvelle file.
+-- Valeur = un ID de round (pas juste `true`) : `returnToLobby` attend RETURN_DELAY avant de
+-- nettoyer, et un joueur peut avoir rejoint UNE AUTRE partie entre-temps (roundInProgress repasse
+-- à false dès la fin du round, avant même que returnToLobby ait fini d'attendre) — sans cet ID,
+-- le nettoyage tardif de l'ancienne partie effaçait le flag de la nouvelle partie en cours,
+-- laissant l'anti-triche du hub reprendre la main sur un joueur pourtant toujours en plein round.
+local playersInRound : { [Player]: number } = {}
+local roundIdCounter = 0
 
 -- ===== Forward declarations (récursion mutuelle) =====
 local checkAndMaybeCountdown
@@ -374,6 +380,9 @@ startRound = function(gamemodeName: string)
 	roundInProgress = true
 	GameSettings.ClosePanel()
 
+	roundIdCounter += 1
+	local thisRoundId = roundIdCounter
+
 	-- Collecte les participants
 	local players = {}
 	for p in q.players do
@@ -385,7 +394,7 @@ startRound = function(gamemodeName: string)
 	for p in q.players do
 		playerZone[p]      = nil
 		queuedViaButton[p] = nil
-		playersInRound[p]  = true
+		playersInRound[p]  = thisRoundId
 		playerZoneEvent:FireClient(p, { gamemodeName = nil, inRound = true })
 	end
 	q.players = {}
@@ -397,7 +406,9 @@ startRound = function(gamemodeName: string)
 	if #players < minPlayers(gamemodeName) then
 		roundInProgress = false
 		for _, p in players do
-			playersInRound[p] = nil
+			if playersInRound[p] == thisRoundId then
+				playersInRound[p] = nil
+			end
 			if p.Parent then
 				playerZoneEvent:FireClient(p, { gamemodeName = nil, inRound = false })
 			end
@@ -413,7 +424,7 @@ startRound = function(gamemodeName: string)
 	task.spawn(function()
 		RoundRunner.RunRound(gm, players, settings)
 		roundInProgress = false
-		returnToLobby(players)
+		returnToLobby(players, thisRoundId)
 
 		-- Réactive les countdowns en attente
 		for name in queues do
@@ -423,12 +434,18 @@ startRound = function(gamemodeName: string)
 	end)
 end
 
-returnToLobby = function(players: { Player })
+returnToLobby = function(players: { Player }, thisRoundId: number)
 	task.wait(RETURN_DELAY)
 	banner("🏠 Retour au lobby !")
 
 	for _, p in players do
 		if not p.Parent then continue end
+		-- Ce joueur a pu rejoindre UNE AUTRE partie pendant les RETURN_DELAY secondes d'attente
+		-- (roundInProgress repasse à false dès la fin du round, avant ce délai) : dans ce cas, ni
+		-- le flag playersInRound ni le renvoi au lobby (reload perso, téléport) ne doivent
+		-- s'appliquer — ce serait casser la partie où il est réellement en train de jouer.
+		if playersInRound[p] ~= thisRoundId then continue end
+
 		playersInRound[p] = nil
 		playerZoneEvent:FireClient(p, { gamemodeName = nil, inRound = false })
 		task.spawn(function()
@@ -560,6 +577,21 @@ function LobbyService.Start(gamemodes)
 			local pos = ZONE_FALLBACK_POSITIONS[posIdx] or Vector3.new(0, 0, 0)
 			createProceduralZone(gm.Name, pos)
 			posIdx += 1
+		end
+	end
+
+	-- SpawnLocation(s) placées directement dans Workspace (prioritaires sur SpawnPoints/
+	-- et sur la grille de secours) : si le level designer a posé un SpawnLocation natif
+	-- dans Studio, on veut spawn dessus plutôt qu'ignorer son emplacement.
+	do
+		local nativeSpawns : { CFrame } = {}
+		for _, inst in workspace:GetDescendants() do
+			if inst:IsA("SpawnLocation") then
+				table.insert(nativeSpawns, inst.CFrame + Vector3.new(0, 5, 0))
+			end
+		end
+		if #nativeSpawns > 0 then
+			lobbySpawns = nativeSpawns
 		end
 	end
 

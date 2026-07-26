@@ -99,7 +99,8 @@ local function buildAbilityButton(order: number, icon: string, label: string, ke
 	statusLabel.Text = isMobile and "Prêt" or keyHintText
 	statusLabel.TextColor3 = Color3.fromRGB(220, 220, 230)
 	statusLabel.Font = Enum.Font.GothamBold
-	statusLabel.TextScaled = true
+	statusLabel.TextSize = 13 -- taille fixe : ce label alterne avec un décompte ("12.3s") qui ne
+	                          -- doit pas changer de taille au fil du compte à rebours (TextScaled)
 	statusLabel.LayoutOrder = 2
 	statusLabel.Parent = column
 

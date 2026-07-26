@@ -26,7 +26,7 @@ Habillage narratif retenu pour **Clown Survival** (implémenté, voir `docs/ROAD
 - **Rôle infecteur** : un **clown**, gardien de nuit de l'aire de jeu, armé d'une **batte de baseball**.
 - **Rôle survivants** : les « enfants » (joueurs non infectés).
 - **Contamination** : le clown doit frapper les enfants à la batte. Un coup réussi propulse le joueur touché avec un **knockback fort basé sur la vélocité d'impact**, façon *Super Smash Bros* (envol spectaculaire, pas juste un tag silencieux). Le joueur touché devient à son tour un clown.
-- **Durée de session** : **5 minutes (300s)** — le clown doit avoir « chassé » (infecté) tous les enfants avant la fin du temps.
+- **Durée de session** : **3 minutes (180s)** — le clown doit avoir « chassé » (infecté) tous les enfants avant la fin du temps.
 - Implémentation : `server/Gamemodes/ClownSurvival.luau`.
 
 ---
@@ -158,13 +158,13 @@ Le HUD client (`StatusHud.client.luau`) écoute et affiche.
 
 Boucle de jeu minimale **fonctionnelle et testée** :
 - `RoundManager.server.luau` — machine à états complète, rotation auto, création du RemoteEvent GameStatus.
-- `Gamemodes/ClownSurvival.luau` — thème **« Le Clown de nuit »** (voir § 1.bis) : clown(s) de départ au hasard, arme batte physique (Motor6D) via `ClownSurvivalEvents.Swing` (hitbox cône `meleeRange`/`MELEE_CONE_DOT`), animation de swing (Heartbeat), **knockback + ragdoll R15 façon Smash Bros** (BallSocketConstraint + `AssemblyLinearVelocity`), bouton "TAUNT" pour les survivants (`ClownSurvivalEvents.Taunt`), ambiance sombre via `Lighting` (restaurée au `Stop()`), highlight clown, conditions de victoire survivants/clowns + timeout, `RoundDuration = 300` (5 min).
+- `Gamemodes/ClownSurvival.luau` — thème **« Le Clown de nuit »** (voir § 1.bis) : clown(s) de départ au hasard, arme batte physique (Motor6D) via `ClownSurvivalEvents.Swing` (hitbox cône `meleeRange`/`MELEE_CONE_DOT`), animation de swing (Heartbeat), **knockback + ragdoll R15 façon Smash Bros** (BallSocketConstraint + `AssemblyLinearVelocity`), bouton "TAUNT" pour les survivants (`ClownSurvivalEvents.Taunt`), ambiance sombre via `Lighting` (restaurée au `Stop()`), highlight clown, conditions de victoire survivants/clowns + timeout, `RoundDuration = 180` (3 min).
 - `ClownSurvivalInput.client.luau` — clic gauche PC + bouton mobile 🏏, actif seulement pour les joueurs devenus clowns (`SetActive` individuel).
 - `ClownSurvivalTaunt.client.luau` — bouton taunt (touche F sur PC, tap sur mobile) réservé aux survivants.
 - `StatusHud.client.luau` — bandeau d'annonces central + timer coin haut-droit.
 - `PlayButton.client.luau` — bouton "JOUER" bas-centre → menu de sélection de gamemode → rejoint la file d'attente (recherche de serveur) via `LobbyService` sans marcher sur une zone.
 - `shared/Gamemodes/Types.luau` — contrat des gamemodes.
-- Config actuelle : `MIN_PLAYERS = 2`, intermission 10 s, round Clown Survival 300 s (5 min).
+- Config actuelle : `MIN_PLAYERS = 2`, intermission 10 s, round Clown Survival 180 s (3 min).
 
 ---
 

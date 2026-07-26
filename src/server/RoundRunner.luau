@@ -17,6 +17,15 @@ local GameStatus = ReplicatedStorage:WaitForChild("GameStatus")
 
 local RoundRunner = {}
 
+-- ===== Victoires "vidées" (rounds avortés par déconnexions en cascade) =====
+-- Une victoire ne doit compter comme une VRAIE victoire (bonus GP vainqueur, gamesWon, série de
+-- victoires, succès "round_win") que si la partie a réellement eu lieu. Sans ça, un round qui se
+-- termine en quelques secondes parce que la moitié des joueurs a quitté produirait un "gagnant"
+-- qui n'a en pratique rien accompli. On ne pénalise PAS les victoires rapides mais légitimes
+-- (personne n'est parti) : les deux conditions doivent être réunies.
+local MIN_MEANINGFUL_ROUND_DURATION = 20 -- s : en dessous, une fin de round est "précoce"
+local VOID_DISCONNECT_RATIO = 0.5 -- + de la moitié des participants du round partis
+
 local function banner(text)
 	GameStatus:FireAllClients({ kind = "banner", text = text })
 	print("[RoundRunner]", text)
@@ -59,11 +68,26 @@ function RoundRunner.RunRound(gamemode, players: { Player }, settings)
 	banner("▶️ " .. gamemode.Name .. " commence !")
 	task.wait(1.5)
 
+	-- Récompenses d'ACTION (voir PlayerConfig.POINTS.KILL/FIRST_BLOOD/etc.) : accordées EN DIRECT
+	-- pendant le round via ce callback injecté dans le ctx, plutôt qu'accumulées et distribuées à
+	-- la fin comme les stats/streaks. Deux raisons : le joueur voit sa barre de GP progresser tout
+	-- de suite (`DataService.AddGoofyPoints` déclenche déjà `DataUpdated`), et ça reste
+	-- naturellement dû même si la victoire finale du round est vidée plus tard (rien à recalculer
+	-- après coup). Le gamemode reste décorrélé de DataService/ProfileStore : il ne voit que cette
+	-- fonction, pas la persistance elle-même.
+	local function awardActionGP(player: Player, amount: number)
+		if not player.Parent then return end
+		local profile = DataService.GetProfile(player)
+		if not profile then return end
+		DataService.AddGoofyPoints(player, amount)
+	end
+
 	local ctx = {
 		Players      = players,
 		Settings     = settings,
 		Map          = map,
 		SpawnCFrames = spawnCFrames,
+		AwardActionGP = awardActionGP,
 	}
 
 	local leaveConn = Players.PlayerRemoving:Connect(function(p)
@@ -71,13 +95,26 @@ function RoundRunner.RunRound(gamemode, players: { Player }, settings)
 	end)
 
 	-- Boucle principale
+	local loopStartTime = os.clock()
 	gamemode.Start(ctx)
 	local winners, reason
-	for elapsed = 1, gamemode.RoundDuration do
+	local endedEarlyAt: number? = nil
+	-- Chrono affiché basé sur le temps RÉEL écoulé (os.clock()), pas sur un simple comptage
+	-- d'itérations : task.wait(1) ne garantit jamais exactement 1s (léger dépassement à chaque
+	-- appel selon la charge serveur), et ces dépassements s'accumulaient au fil de la boucle —
+	-- le chrono affiché dérivait de plusieurs secondes en fin de round par rapport au temps réel
+	-- (et donc par rapport aux récompenses de survie de ClownSurvival.luau, elles basées sur
+	-- os.clock() en continu, donc déjà précises).
+	for _ = 1, gamemode.RoundDuration do
 		task.wait(1)
-		timerText("⏱️ " .. (gamemode.RoundDuration - elapsed) .. "s")
+		local trueElapsed = math.min(gamemode.RoundDuration, math.floor(os.clock() - loopStartTime))
+		timerText("⏱️ " .. (gamemode.RoundDuration - trueElapsed) .. "s")
 		winners, reason = gamemode.CheckWin()
-		if winners then break end
+		if winners then
+			endedEarlyAt = trueElapsed
+			break
+		end
+		if trueElapsed >= gamemode.RoundDuration then break end
 	end
 	if not winners then
 		winners, reason = gamemode.ResolveTimeout()
@@ -85,16 +122,42 @@ function RoundRunner.RunRound(gamemode, players: { Player }, settings)
 
 	-- Métadonnées avant Stop() (certains modes effacent leur état dans Stop)
 	local winnerRoles = gamemode.GetWinnerRoles and gamemode.GetWinnerRoles(winners) or {}
+	local killCounts  = gamemode.GetKillCounts and gamemode.GetKillCounts() or {}
 	local winnerSet   = {}
 	for _, w in winners do winnerSet[w] = true end
+
+	-- Bonus "jamais touché" (survivant qui a fini le round sans jamais être contaminé/éliminé) :
+	-- une action réelle du round, pas un bonus de victoire — reste due même si la victoire finale
+	-- est vidée (voir plus bas).
+	local neverTouchedSet = {}
+	if gamemode.GetNeverTouchedSurvivors then
+		for _, p in gamemode.GetNeverTouchedSurvivors() do
+			neverTouchedSet[p] = true
+		end
+	end
+
+	-- Une fin précoce (avant ResolveTimeout, donc via CheckWin) ET beaucoup de départs = victoire
+	-- vidée. Un ResolveTimeout n'est jamais vidé : la partie est allée à son terme normal.
+	local stillConnected = 0
+	for _, p in players do
+		if p.Parent then stillConnected += 1 end
+	end
+	local disconnectRatio = #players > 0 and (#players - stillConnected) / #players or 0
+	local voidedVictory = endedEarlyAt ~= nil
+		and endedEarlyAt < MIN_MEANINGFUL_ROUND_DURATION
+		and disconnectRatio > VOID_DISCONNECT_RATIO
 
 	gamemode.Stop()
 	leaveConn:Disconnect()
 
-	local names = {}
-	for _, w in winners do table.insert(names, w.Name) end
-	banner("🏆 " .. (reason or "Fin du round") .. " — " ..
-		(#names > 0 and table.concat(names, ", ") or "Personne"))
+	-- Pas de liste de noms dans le bandeau : avec beaucoup de gagnants (ex. toute l'équipe
+	-- survivante), le message devenait bien trop long. Le `reason` suffit à dire qui a gagné
+	-- (camp clown/survivant), sans lister chaque joueur individuellement.
+	if voidedVictory then
+		banner("⏱️ Partie écourtée par des déconnexions — victoire non comptabilisée.")
+	else
+		banner("🏆 " .. (reason or "Fin du round") .. (#winners == 0 and " — Personne n'a gagné" or ""))
+	end
 
 	-- GP + stats + achievements
 	for _, p in players do
@@ -103,12 +166,49 @@ function RoundRunner.RunRound(gamemode, players: { Player }, settings)
 		if not profile then continue end
 
 		profile.stats.gamesPlayed += 1
-		if winnerSet[p] then profile.stats.gamesWon += 1 end
 
-		local pts = winnerSet[p] and PlayerConfig.POINTS.WINNER or PlayerConfig.POINTS.PARTICIPANT
+		-- Coups réussis en tant que clown (Clown Survival) : une action pendant la partie, pas une
+		-- récompense de victoire — reste due même si la victoire elle-même est vidée (voir plus bas).
+		local kills = killCounts[p] or 0
+		if kills > 0 then
+			profile.stats.totalClownKills = (profile.stats.totalClownKills or 0) + kills
+		end
+
+		-- Victoire vidée (voir MIN_MEANINGFUL_ROUND_DURATION/VOID_DISCONNECT_RATIO) : personne
+		-- n'est traité comme vainqueur pour les stats/récompenses de victoire, mais la
+		-- participation (GP, gamesPlayed, succès "round_played") reste due à ceux qui sont
+		-- restés jusqu'au bout — ce n'est pas de leur faute si la partie s'est vidée.
+		local isRealWin = winnerSet[p] and not voidedVictory
+
+		if isRealWin then
+			profile.stats.gamesWon += 1
+			local role = winnerRoles[p]
+			if role == "clown" then
+				profile.stats.clownWins = (profile.stats.clownWins or 0) + 1
+			elseif role == "survivor" then
+				profile.stats.survivorWins = (profile.stats.survivorWins or 0) + 1
+			end
+		end
+
+		-- Win streak par gamemode : victoires consécutives sur CE mode précis, remise à 0 dès
+		-- qu'un round de ce mode est perdu. bestStreaks garde le record jamais atteint. Gelée
+		-- (ni incrémentée ni remise à 0) si la victoire est vidée : ce round ne compte pas.
+		if not voidedVictory then
+			local streak = isRealWin and (profile.stats.winStreaks[gamemode.Name] or 0) + 1 or 0
+			profile.stats.winStreaks[gamemode.Name] = streak
+			if streak > (profile.stats.bestStreaks[gamemode.Name] or 0) then
+				profile.stats.bestStreaks[gamemode.Name] = streak
+			end
+		end
+
+		local pts = isRealWin and PlayerConfig.POINTS.WINNER or PlayerConfig.POINTS.PARTICIPANT
 		DataService.AddGoofyPoints(p, pts)
 
-		if winnerSet[p] then
+		if neverTouchedSet[p] then
+			DataService.AddGoofyPoints(p, PlayerConfig.POINTS.NEVER_TOUCHED)
+		end
+
+		if isRealWin then
 			AchievementService.Check(p, profile, "round_win", {
 				gamemode = gamemode.Name,
 				role     = winnerRoles[p] or "winner",
