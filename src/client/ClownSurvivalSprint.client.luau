@@ -28,7 +28,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 local EXHAUSTION_BREATH_SOUND_ID   = "rbxassetid://6282917777"
 local EXHAUSTION_BLUR_SIZE         = 10.5 -- -25% de l'intensité initialement testée (14)
 local EXHAUSTION_VIGNETTE_THICKNESS = 70   -- px, léger volontairement
-local EXHAUSTION_BREATH_VOLUME     = 0.6
+local EXHAUSTION_BREATH_VOLUME     = 1.2
 local EXHAUSTION_SMOOTH_TIME       = 0.25 -- lisse les à-coups du throttle réseau (~10 maj/s)
 
 local exhaustionBlur = Instance.new("BlurEffect")

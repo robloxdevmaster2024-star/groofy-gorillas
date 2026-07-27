@@ -11,11 +11,65 @@
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService      = game:GetService("TweenService")
+local SoundService      = game:GetService("SoundService")
 
 local player = Players.LocalPlayer
 
 local eventsFolder     = ReplicatedStorage:WaitForChild("ClownSurvivalEvents")
 local comboUpdateEvent = eventsFolder:WaitForChild("ComboUpdate")
+
+local sfxGroup = SoundService:WaitForChild("SFX")
+
+-- Callout façon jeu de combat ("DOUBLE !", "TRIPLE !"...) : un mot qui pop en plus du chiffre
+-- au moment PRÉCIS où le combo atteint un palier (pas à chaque coup au-dessus), avec un stinger
+-- sonore dont le pitch monte avec le palier — plus le combo grimpe, plus ça "sonne" gros.
+-- ⚠️ ID PLACEHOLDER (même pattern que shared/UI/UISound.luau) : "rbxassetid://0" est silencieux,
+-- ne lève pas d'erreur — remplacer cette seule valeur suffit à activer le son partout.
+local CALLOUT_SOUND_ID = "rbxassetid://0"
+local CALLOUT_WORDS: { [number]: string } = {
+	[2]  = "DOUBLE !",
+	[3]  = "TRIPLE !",
+	[4]  = "QUADRUPLE !",
+	[5]  = "IMPARABLE !",
+	[7]  = "DÉCHAÎNÉ !",
+	[10] = "LÉGENDAIRE !",
+}
+-- Pitch croissant par palier (dans l'ordre des clés ci-dessus) : le stinger sonne de plus en plus aigu/fort.
+local CALLOUT_TIERS = { 2, 3, 4, 5, 7, 10 }
+
+-- Couleur qui s'intensifie avec le palier (même index que CALLOUT_TIERS) : or pâle → orange → rouge
+-- chauffé à blanc → magenta électrique au palier max, pour que "LÉGENDAIRE !" tape visuellement
+-- beaucoup plus fort que "DOUBLE !" et donne envie d'atteindre le palier suivant.
+local CALLOUT_COLORS = {
+	Color3.fromRGB(255, 235, 150),
+	Color3.fromRGB(255, 200, 90),
+	Color3.fromRGB(255, 160, 60),
+	Color3.fromRGB(255, 110, 40),
+	Color3.fromRGB(255, 60, 60),
+	Color3.fromRGB(255, 90, 220),
+}
+
+-- Même "feel" que le pop "+X GP" (voir PlayerStats.client.luau : GP_POPUP_RISE/GP_POPUP_DURATION) :
+-- ça monte en flottant tout en s'estompant, mêmes durée/distance pour une cohérence entre les deux
+-- boucles de récompense du jeu (combo au coup par coup, GP au bilan).
+local CALLOUT_RISE           = 65
+local CALLOUT_FADE_DURATION  = 1.8
+
+local function playCalloutSound(tierIndex: number)
+	if CALLOUT_SOUND_ID == "rbxassetid://0" then return end -- placeholder non renseigné
+
+	local sound = Instance.new("Sound")
+	sound.SoundId = CALLOUT_SOUND_ID
+	sound.Volume = 0.6 + tierIndex * 0.05
+	sound.PlaybackSpeed = 1 + tierIndex * 0.08
+	sound.SoundGroup = sfxGroup
+	sound.Parent = SoundService -- son 2D, pas besoin de position dans le monde
+	sound.Ended:Once(function() sound:Destroy() end)
+	sound:Play()
+	task.delay(3, function()
+		if sound.Parent then sound:Destroy() end
+	end)
+end
 
 local BAR_DURATION = 10.0 -- s : doit rester synchro avec COMBO_RESET_WINDOW côté serveur
 local BASE_TILT    = -12  -- degrés : inclinaison diagonale façon "stamp" de jeu de combat
@@ -38,6 +92,7 @@ local flashLabel: TextLabel? = nil
 local impactRing: Frame? = nil
 local barBack: Frame? = nil
 local barFill: Frame? = nil
+local calloutLabel: TextLabel? = nil
 local activeToken = 0
 local barTween: Tween? = nil
 local MILESTONE_STEP = 2 -- tous les X coups : impact renforcé (ring plus gros, flash plus fort)
@@ -168,12 +223,40 @@ local function attachToCharacter(character: Model)
 	fillCorner.CornerRadius = UDim.new(1, 0)
 	fillCorner.Parent = fill
 
+	-- Mot de callout ("DOUBLE !", "TRIPLE !"...) : au-dessus du stamp, PAS enfant de "tilted"
+	-- (reste bien horizontal/lisible même quand le stamp est incliné en diagonale).
+	local callout = Instance.new("TextLabel")
+	callout.Name = "ComboCallout"
+	callout.AnchorPoint = Vector2.new(0.5, 1)
+	callout.Position = UDim2.new(0.5, 0, 0.5, -34)
+	callout.Size = UDim2.fromOffset(280, 40)
+	callout.BackgroundTransparency = 1
+	callout.Font = Enum.Font.FredokaOne
+	callout.TextScaled = true
+	callout.TextColor3 = Color3.fromRGB(255, 220, 90)
+	callout.TextStrokeTransparency = 0
+	callout.TextStrokeColor3 = Color3.fromRGB(60, 20, 10)
+	callout.TextTransparency = 1
+	callout.Text = ""
+	callout.ZIndex = 4
+	callout.Parent = gui
+
+	-- Halo néon (même principe que celui du stamp de combo ci-dessus) : flicker coloré qui
+	-- accompagne le pop, renforce l'impact visuel sans dépendre d'un asset supplémentaire.
+	local calloutGlow = Instance.new("UIStroke")
+	calloutGlow.Name = "CalloutGlow"
+	calloutGlow.Thickness = 3
+	calloutGlow.Color = Color3.fromRGB(255, 255, 255)
+	calloutGlow.Transparency = 1
+	calloutGlow.Parent = callout
+
 	billboard = gui
 	label = text
 	flashLabel = flash
 	impactRing = ring
 	barBack = back
 	barFill = fill
+	calloutLabel = callout
 end
 
 -- Éclats qui jaillissent du centre du stamp à chaque coup (simulés en UI, pas de vrai
@@ -236,7 +319,7 @@ local function onCombo(count: number)
 	if not billboard or billboard.Parent == nil or billboard.Adornee ~= character:FindFirstChild("Head") then
 		attachToCharacter(character)
 	end
-	if not billboard or not label or not flashLabel or not impactRing or not barBack or not barFill then return end
+	if not billboard or not label or not flashLabel or not impactRing or not barBack or not barFill or not calloutLabel then return end
 
 	local gui, text, flash, ring, back, fill = billboard, label, flashLabel, impactRing, barBack, barFill
 	local tilted = back.Parent :: Frame
@@ -353,6 +436,90 @@ local function onCombo(count: number)
 			TweenInfo.new(isMilestone and 0.45 or 0.32, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
 			{ Transparency = 1 }
 		):Play()
+	end
+
+	-- Callout ("DOUBLE !", "TRIPLE !"...) : uniquement au coup EXACT où le palier est atteint (pas
+	-- à chaque coup au-dessus, sinon "DOUBLE !" réapparaîtrait à chaque coup une fois passé x2).
+	local calloutWord = CALLOUT_WORDS[count]
+	if calloutWord then
+		local tierIndex = table.find(CALLOUT_TIERS, count) or 1
+		local calloutColor = CALLOUT_COLORS[tierIndex] or CALLOUT_COLORS[#CALLOUT_COLORS]
+		playCalloutSound(tierIndex)
+
+		local startPos = UDim2.new(0.5, 0, 0.5, -34)
+		calloutLabel.Text = calloutWord
+		calloutLabel.TextColor3 = calloutColor
+		calloutLabel.TextTransparency = 0
+		calloutLabel.TextStrokeTransparency = 0
+		calloutLabel.Position = startPos
+		calloutLabel.Size = UDim2.fromOffset(280 + tierIndex * 10, 40 + tierIndex * 5)
+
+		-- Wobble d'entrée : parti en rotation (sens aléatoire), claque à plat avec rebond élastique —
+		-- amplitude croissante avec le palier pour une sensation de plus en plus explosive.
+		local wobbleAngle = (10 + tierIndex * 2) * (math.random(0, 1) == 0 and -1 or 1)
+		calloutLabel.Rotation = wobbleAngle
+
+		-- Pop élastique en surtaille puis stabilisation, façon "coup de tampon" jeu de combat —
+		-- la surtaille grossit elle aussi avec le palier.
+		local calloutStartSize = calloutLabel.Size
+		local overshoot = 1.5 + tierIndex * 0.06
+		calloutLabel.Size = UDim2.fromOffset(calloutStartSize.X.Offset * overshoot, calloutStartSize.Y.Offset * overshoot)
+		TweenService:Create(
+			calloutLabel,
+			TweenInfo.new(0.32, Enum.EasingStyle.Elastic, Enum.EasingDirection.Out),
+			{ Size = calloutStartSize, Rotation = 0 }
+		):Play()
+
+		-- Halo néon : flash coloré au moment du pop puis s'éteint totalement.
+		local calloutGlow = calloutLabel:FindFirstChild("CalloutGlow") :: UIStroke?
+		if calloutGlow then
+			calloutGlow.Color = calloutColor
+			calloutGlow.Thickness = 1.5 + tierIndex * 0.3
+			calloutGlow.Transparency = 0
+			TweenService:Create(
+				calloutGlow,
+				TweenInfo.new(0.5 + tierIndex * 0.05, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+				{ Transparency = 1 }
+			):Play()
+		end
+
+		-- Gerbe d'éclats supplémentaire au moment du callout (en plus de celle du coup normal),
+		-- couleur du palier, nombre croissant — de plus en plus spectaculaire à mesure que ça monte.
+		spawnParticles(gui, calloutColor, 8 + tierIndex * 3)
+
+		-- Monte en flottant tout en s'estompant, en parallèle du pop de taille ci-dessus — même
+		-- comportement que le pop "+X GP" (montée + fondu simultanés, une seule tween continue).
+		TweenService:Create(
+			calloutLabel,
+			TweenInfo.new(CALLOUT_FADE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{
+				Position = UDim2.new(0.5, 0, 0.5, -34 - CALLOUT_RISE),
+				TextTransparency = 1,
+				TextStrokeTransparency = 1,
+			}
+		):Play()
+
+		-- Petit "punch" caméra (zoom-in bref) : renforce le poids du palier atteint, plus marqué
+		-- aux gros paliers. Purement local (ne touche pas le camera shake serveur existant).
+		local camera = workspace.CurrentCamera
+		if camera then
+			local baseFov = camera.FieldOfView
+			local punch = 3 + tierIndex * 1.2
+			TweenService:Create(
+				camera,
+				TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+				{ FieldOfView = baseFov - punch }
+			):Play()
+			task.delay(0.09, function()
+				if camera.Parent then
+					TweenService:Create(
+						camera,
+						TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+						{ FieldOfView = baseFov }
+					):Play()
+				end
+			end)
+		end
 	end
 
 	-- Petit "kick" de position : recul vertical bref puis retour, amplitude croissante avec le

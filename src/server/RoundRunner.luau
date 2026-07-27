@@ -209,17 +209,21 @@ function RoundRunner.RunRound(gamemode, players: { Player }, settings)
 		if isRealWin then
 			profile.stats.gamesWon += 1
 			local role = winnerRoles[p]
+			local weeklyWin = DataService.EnsureCurrentWeek(p)
 			if role == "clown" then
 				profile.stats.clownWins = (profile.stats.clownWins or 0) + 1
+				LeaderboardService.UpdateScore("clownWins", "alltime", p.UserId, profile.stats.clownWins)
+				if weeklyWin then
+					weeklyWin.clownWins += 1
+					LeaderboardService.UpdateScore("clownWins", "weekly", p.UserId, weeklyWin.clownWins)
+				end
 			elseif role == "survivor" then
 				profile.stats.survivorWins = (profile.stats.survivorWins or 0) + 1
-			end
-
-			LeaderboardService.UpdateScore("wins", "alltime", p.UserId, profile.stats.gamesWon)
-			local weeklyWin = DataService.EnsureCurrentWeek(p)
-			if weeklyWin then
-				weeklyWin.wins += 1
-				LeaderboardService.UpdateScore("wins", "weekly", p.UserId, weeklyWin.wins)
+				LeaderboardService.UpdateScore("survivorWins", "alltime", p.UserId, profile.stats.survivorWins)
+				if weeklyWin then
+					weeklyWin.survivorWins += 1
+					LeaderboardService.UpdateScore("survivorWins", "weekly", p.UserId, weeklyWin.survivorWins)
+				end
 			end
 		end
 

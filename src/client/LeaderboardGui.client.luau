@@ -25,7 +25,7 @@ local PanelCoordinator = require(
 local PANEL_ID = "leaderboard"
 
 -- ===== Constantes UI =====
-local PANEL_W    = 400
+local PANEL_W    = 460 -- élargi (+60) pour que les 4 onglets de board (GP/Clowns/Enfants/Séries) aient la place sans tronquer le texte
 local PANEL_H    = 520
 local ROW_H      = 34
 local HEADER_H   = 44
@@ -294,13 +294,14 @@ local function rebuildList()
 end
 
 -- ===== Construction des boutons d'onglets (data-driven, LeaderboardsConfig) =====
-local function makeTabButton(parent, text, widthScale, onClick)
+local function makeTabButton(parent, text, widthScale, textSize, onClick)
 	local btn = Instance.new("TextButton", parent)
 	btn.Size              = UDim2.new(widthScale, -4, 1, 0)
 	btn.BackgroundColor3  = COLOR_TAB_OFF
 	btn.Font              = Enum.Font.GothamBold
-	btn.TextSize           = 13
+	btn.TextSize           = textSize
 	btn.TextColor3        = COLOR_DIM
+	btn.TextTruncate      = Enum.TextTruncate.AtEnd -- filet de sécurité si un futur libellé reste trop long malgré tabLabel
 	btn.Text              = text
 	btn.AutoButtonColor   = true
 	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 7)
@@ -311,7 +312,7 @@ end
 
 local periodButtons = {}
 for _, period in LeaderboardsConfig.PERIODS do
-	local btn = makeTabButton(periodRow, period.label, 1 / #LeaderboardsConfig.PERIODS, function()
+	local btn = makeTabButton(periodRow, period.label, 1 / #LeaderboardsConfig.PERIODS, 13, function()
 		selectedPeriod = period.id
 		rebuildList()
 		for id, b in periodButtons do
@@ -326,7 +327,9 @@ periodButtons[selectedPeriod].TextColor3       = COLOR_TOP
 
 local boardButtons = {}
 for _, board in LeaderboardsConfig.BOARDS do
-	local btn = makeTabButton(boardRow, board.icon .. " " .. board.label, 1 / #LeaderboardsConfig.BOARDS, function()
+	-- tabLabel (court) plutôt que label (ex. "Victoires clown") : avec 4 boards sur la même
+	-- rangée, le libellé long dépassait de son bouton (texte tronqué/qui sort du cadre).
+	local btn = makeTabButton(boardRow, board.icon .. " " .. board.tabLabel, 1 / #LeaderboardsConfig.BOARDS, 12, function()
 		selectedBoard = board.id
 		rebuildList()
 		for id, b in boardButtons do

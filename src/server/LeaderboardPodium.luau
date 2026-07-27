@@ -42,7 +42,7 @@ local PLATFORM_GAP     = 0.6
 -- reste ancré au même endroit (voir buildBoard : le calcul de hauteur du CFrame est déjà écrit de
 -- façon à ce que le BAS soit fixe indépendamment de BOARD_H, seul le centre remonte).
 local BOARD_SCALE       = 3
-local BOARD_W, BOARD_H  = 10 * BOARD_SCALE, 7 * BOARD_SCALE -- studs
+local BOARD_W, BOARD_H  = 12 * BOARD_SCALE, 7 * BOARD_SCALE -- studs (largeur +2 : la rangée d'onglets de board est passée de 3 à 4 colonnes)
 local PIXELS_PER_STUD   = 50 / BOARD_SCALE
 local TAB_ROW_H_PX      = 42
 local ROW_H_PX          = 30
@@ -190,13 +190,14 @@ local function placeAvatarOnPlatform(avatarModel: Model, platformPart: BasePart,
 	avatarModel.Parent = parentModel
 end
 
-local function makeTabButton(parent: Instance, text: string, widthScale: number, onClick: () -> ())
+local function makeTabButton(parent: Instance, text: string, widthScale: number, textSize: number, onClick: () -> ())
 	local btn = Instance.new("TextButton")
 	btn.Size              = UDim2.new(widthScale, -4, 1, 0)
 	btn.BackgroundColor3  = COLOR_TAB_OFF
 	btn.Font              = Enum.Font.GothamBold
-	btn.TextSize          = 20
+	btn.TextSize          = textSize
 	btn.TextColor3        = COLOR_DIM
+	btn.TextTruncate      = Enum.TextTruncate.AtEnd -- filet de sécurité si un futur libellé reste trop long malgré tabLabel
 	btn.Text              = text
 	btn.AutoButtonColor   = true
 	btn.Parent            = parent
@@ -419,7 +420,7 @@ function LeaderboardPodium.Build(lobbyModel: Instance?)
 
 	local periodButtons = {}
 	for _, period in LeaderboardsConfig.PERIODS do
-		periodButtons[period.id] = makeTabButton(ui.periodRow, period.label, 1 / #LeaderboardsConfig.PERIODS, function()
+		periodButtons[period.id] = makeTabButton(ui.periodRow, period.label, 1 / #LeaderboardsConfig.PERIODS, 20, function()
 			state.period = period.id
 			for id, b in periodButtons do
 				b.BackgroundColor3 = (id == period.id) and COLOR_TAB_ON or COLOR_TAB_OFF
@@ -433,7 +434,9 @@ function LeaderboardPodium.Build(lobbyModel: Instance?)
 
 	local boardButtons = {}
 	for _, board in LeaderboardsConfig.BOARDS do
-		boardButtons[board.id] = makeTabButton(ui.boardRow, board.icon .. " " .. board.label, 1 / #LeaderboardsConfig.BOARDS, function()
+		-- tabLabel (court) plutôt que label (ex. "Victoires clown") : avec 4 boards sur la même
+		-- rangée, le libellé long dépassait de son bouton (texte tronqué/qui sort du cadre).
+		boardButtons[board.id] = makeTabButton(ui.boardRow, board.icon .. " " .. board.tabLabel, 1 / #LeaderboardsConfig.BOARDS, 17, function()
 			state.board = board.id
 			for id, b in boardButtons do
 				b.BackgroundColor3 = (id == board.id) and COLOR_TAB_ON or COLOR_TAB_OFF

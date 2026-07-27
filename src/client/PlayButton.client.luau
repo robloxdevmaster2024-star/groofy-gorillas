@@ -35,6 +35,7 @@ screenGui.Name           = "PlayButtonGui"
 screenGui.ResetOnSpawn   = false
 screenGui.IgnoreGuiInset = true
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.DisplayOrder   = -5 -- toujours sous les panneaux (profil, classements, réglages...)
 screenGui.Parent         = localPlayer.PlayerGui
 
 -- Bouton principal "JOUER"

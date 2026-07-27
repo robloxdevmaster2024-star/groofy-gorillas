@@ -156,7 +156,7 @@ local STAMINA_REGEN_PER_SEC_DEPLETED = 30
 local STAMINA_BROADCAST_INTERVAL = 0.1 -- s entre deux mises à jour envoyées au client (throttle réseau)
 -- Petite pause avant que la recharge démarre après avoir consommé de la stamina (sprint ou
 -- glissade) : plus réaliste qu'une recharge instantanée dès qu'on relâche Shift.
-local STAMINA_REGEN_DELAY = 0.5 -- s
+local STAMINA_REGEN_DELAY = 1 -- s
 
 -- Fatigue : si la jauge tombe à 0, pénalité de vitesse ET saut/couché bloqués, jusqu'à ce que la
 -- jauge soit remontée à 100% (durée = staminaDepleted, pas un minuteur fixe indépendant).
@@ -1563,17 +1563,18 @@ function ClownSurvival.Start(ctx)
 			visionAvailableEvent:FireClient(chosen, true)
 			-- Pas de false pour ScreamCountdown ici : les clowns de départ le voient aussi désormais
 			-- (broadcastScreamCountdown, appelé juste après via startScreamLoop, les active).
-			GameStatus:FireClient(chosen, { kind = "banner", text = "🤡 Tu es LE CLOWN ! Chasse les enfants à la batte !" })
+			GameStatus:FireClient(chosen, { kind = "banner", text = "🤡 Vous êtes un CLOWN ! Chassez les enfants !" })
 		end
 	end
 
-	GameStatus:FireAllClients({ kind = "banner", text = "🎪 LE CLOWN DE NUIT — fuyez avant d'être frappé !" })
-
 	-- Le bouton taunt/se coucher n'est visible que pour les survivants (pas les clowns de départ)
 	for _, player in ctx.Players do
-		if not infected[player] then
+		if infected[player] then
+			-- Rien à afficher ici : les clowns de départ ont déjà reçu leur bannière au moment de leur tirage au sort.
+		else
 			tauntAvailableEvent:FireClient(player, true)
 			proneAvailableEvent:FireClient(player, true)
+			GameStatus:FireClient(player, { kind = "banner", text = "🎈 Vous êtes un ENFANT ! Échappez aux clowns !" })
 		end
 		rosterVisibleEvent:FireClient(player, true) -- panneau clowns/enfants/éliminés, réservé aux participants
 	end
@@ -1803,6 +1804,20 @@ function ClownSurvival.Start(ctx)
 		if target then
 			playHitEffect(target)
 
+			-- Hit-stop partagé : le clown ET la victime se figent en même temps le temps de
+			-- HIT_STOP_DURATION (même "snap" d'arrêt sur image des deux côtés) avant que la victime
+			-- ne parte en vol — la victime était déjà gelée seule via applyKnockbackWithHitStop,
+			-- geler aussi l'attaquant rend le coup nettement plus lourd/percutant à ressentir.
+			local attackerHRP = getHRP(player)
+			if attackerHRP then
+				attackerHRP.Anchored = true
+				task.delay(HIT_STOP_DURATION, function()
+					if attackerHRP.Parent then
+						attackerHRP.Anchored = false
+					end
+				end)
+			end
+
 			-- Secousse de caméra pour les deux joueurs impliqués : plus forte pour l'enfant
 			-- touché (il se fait smasher), plus légère pour le clown (feedback du coup porté).
 			cameraShakeEvent:FireClient(target, 1)
@@ -1825,7 +1840,6 @@ function ClownSurvival.Start(ctx)
 				awardActionGP(player, comboBonus)
 			end
 
-			local attackerHRP = getHRP(player)
 			local targetHRP = getHRP(target)
 			local knockDir = attackerHRP and targetHRP
 				and (targetHRP.Position - attackerHRP.Position).Unit

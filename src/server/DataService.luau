@@ -48,10 +48,11 @@ local TEMPLATE = {
 		-- hebdomadaires. Remis à zéro paresseusement (DataService.EnsureCurrentWeek) dès que
 		-- `weekId` ne correspond plus à la semaine ISO courante — pas de tâche planifiée à part.
 		weekly = {
-			weekId     = "",
-			gp         = 0,
-			wins       = 0,
-			bestStreak = 0,
+			weekId       = "",
+			gp           = 0,
+			clownWins    = 0,
+			survivorWins = 0,
+			bestStreak   = 0,
 		},
 	},
 	settings = {
@@ -145,10 +146,11 @@ function DataService.EnsureCurrentWeek(player)
 	local weekly = profile.Data.stats.weekly
 	local currentWeek = WeekId.Current()
 	if weekly.weekId ~= currentWeek then
-		weekly.weekId     = currentWeek
-		weekly.gp         = 0
-		weekly.wins       = 0
-		weekly.bestStreak = 0
+		weekly.weekId       = currentWeek
+		weekly.gp           = 0
+		weekly.clownWins    = 0
+		weekly.survivorWins = 0
+		weekly.bestStreak   = 0
 	end
 	return weekly
 end
@@ -284,7 +286,8 @@ local function onPlayerAdded(player: Player)
 	-- prochain gain/victoire l'aurait fait de toute façon, mais autant ne pas attendre).
 	local stats = profile.Data.stats
 	LeaderboardService.UpdateScore("gp", "alltime", player.UserId, profile.Data.goofyPoints)
-	LeaderboardService.UpdateScore("wins", "alltime", player.UserId, stats.gamesWon)
+	LeaderboardService.UpdateScore("clownWins", "alltime", player.UserId, stats.clownWins)
+	LeaderboardService.UpdateScore("survivorWins", "alltime", player.UserId, stats.survivorWins)
 	local bestStreakOverall = 0
 	for _, streak in stats.bestStreaks do
 		bestStreakOverall = math.max(bestStreakOverall, streak)
@@ -294,7 +297,8 @@ local function onPlayerAdded(player: Player)
 	local weekly = DataService.EnsureCurrentWeek(player)
 	if weekly then
 		LeaderboardService.UpdateScore("gp", "weekly", player.UserId, weekly.gp)
-		LeaderboardService.UpdateScore("wins", "weekly", player.UserId, weekly.wins)
+		LeaderboardService.UpdateScore("clownWins", "weekly", player.UserId, weekly.clownWins)
+		LeaderboardService.UpdateScore("survivorWins", "weekly", player.UserId, weekly.survivorWins)
 		LeaderboardService.UpdateScore("streak", "weekly", player.UserId, weekly.bestStreak)
 	end
 

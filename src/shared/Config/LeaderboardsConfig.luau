@@ -7,8 +7,9 @@
 
 export type BoardDef = {
 	id: string,            -- utilisé tel quel dans le nom du OrderedDataStore (voir LeaderboardService)
-	label: string,         -- titre affiché dans les onglets/en-têtes
+	label: string,         -- titre affiché dans les en-têtes/titres (place large)
 	labelUpper: string,    -- même chose en MAJUSCULES, écrit à la main (voir unitUpper)
+	tabLabel: string,      -- libellé COURT pour les boutons d'onglet (place étroite, 4 onglets sur la même rangée) — voir LeaderboardGui.client.luau/LeaderboardPodium.luau
 	unit: string,          -- suffixe pluriel (ex. "7 victoires") — aussi utilisé tel quel pour l'en-tête de colonne
 	unitSingular: string,  -- suffixe singulier, utilisé quand le score vaut exactement 1 (ex. "1 victoire")
 	unitUpper: string,     -- pluriel en MAJUSCULES, écrit à la main : `string.upper` (Luau, ASCII only) casse les accents ("D'AFFILéE" au lieu de "D'AFFILÉE", "SéRIE" au lieu de "SÉRIE")
@@ -16,9 +17,10 @@ export type BoardDef = {
 }
 
 local BOARDS: { BoardDef } = {
-	{ id = "gp",     label = "Goofy Points",    labelUpper = "GOOFY POINTS",    unit = "GP",                   unitSingular = "GP",                  unitUpper = "GP",                   icon = "🏆" },
-	{ id = "wins",   label = "Victoires",       labelUpper = "VICTOIRES",       unit = "victoires",            unitSingular = "victoire",             unitUpper = "VICTOIRES",            icon = "🥊" },
-	{ id = "streak", label = "Meilleure série", labelUpper = "MEILLEURE SÉRIE", unit = "victoires d'affilées", unitSingular = "victoire d'affilée",   unitUpper = "VICTOIRES D'AFFILÉES", icon = "🔥" },
+	{ id = "gp",           label = "Goofy Points",     labelUpper = "GOOFY POINTS",     tabLabel = "GP",      unit = "GP",                   unitSingular = "GP",                 unitUpper = "GP",                   icon = "🏆" },
+	{ id = "clownWins",    label = "Victoires clown",  labelUpper = "VICTOIRES CLOWN",  tabLabel = "Clowns",  unit = "victoires",            unitSingular = "victoire",            unitUpper = "VICTOIRES",            icon = "🤡" },
+	{ id = "survivorWins", label = "Victoires enfant", labelUpper = "VICTOIRES ENFANT", tabLabel = "Enfants", unit = "victoires",            unitSingular = "victoire",            unitUpper = "VICTOIRES",            icon = "🧒" },
+	{ id = "streak",       label = "Meilleure série",  labelUpper = "MEILLEURE SÉRIE",  tabLabel = "Séries",  unit = "victoires d'affilées", unitSingular = "victoire d'affilée", unitUpper = "VICTOIRES D'AFFILÉES", icon = "🔥" },
 }
 
 export type PeriodDef = {
