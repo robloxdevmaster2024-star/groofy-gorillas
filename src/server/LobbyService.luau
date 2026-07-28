@@ -1,12 +1,12 @@
 --!nonstrict
--- LobbyService.luau — Hub lobby : zones, files d'attente, countdown, lancement des rounds.
+-- LobbyService.luau — Hub lobby : files d'attente, countdown, lancement des rounds.
+--
+-- Rejoindre une file se fait UNIQUEMENT via le bouton "JOUER" (voir PlayButton.client.luau) —
+-- pas de zone physique à marcher dessus dans le monde.
 --
 -- Convention map Studio :
 --   ServerStorage.Venues.Lobby  →  Model avec :
 --     SpawnPoints/   → BaseParts (positions de spawn lobby)
---     Zones/         → BaseParts avec Attribute("Gamemode") = "Clown Survival" | "Dodgeball" | ...
---
--- Si aucune map "Lobby" n'existe → zones procédurales colorées générées automatiquement.
 
 local Players           = game:GetService("Players")
 local ServerStorage     = game:GetService("ServerStorage")
@@ -31,8 +31,8 @@ end
 local function getOrCreate(parent, name)
 	return parent:FindFirstChild(name) or Instance.new("RemoteEvent", parent)
 end
-local zoneUpdateEvent    = getOrCreate(lobbyFolder, "ZoneUpdate"); zoneUpdateEvent.Name = "ZoneUpdate"
-local playerZoneEvent    = getOrCreate(lobbyFolder, "PlayerZone"); playerZoneEvent.Name = "PlayerZone"
+local zoneUpdateEvent    = getOrCreate(lobbyFolder, "ZoneUpdate"); zoneUpdateEvent.Name = "ZoneUpdate" -- statut de file (compteur/countdown) pour le HUD
+local playerZoneEvent    = getOrCreate(lobbyFolder, "PlayerZone"); playerZoneEvent.Name = "PlayerZone" -- file actuelle du joueur (nil si aucune)
 local requestJoinEvent   = getOrCreate(lobbyFolder, "RequestJoinQueue"); requestJoinEvent.Name = "RequestJoinQueue"
 local requestLeaveEvent  = getOrCreate(lobbyFolder, "RequestLeaveQueue"); requestLeaveEvent.Name = "RequestLeaveQueue"
 local getGamemodesFunc   = lobbyFolder:FindFirstChild("GetGamemodes") or Instance.new("RemoteFunction")
@@ -43,35 +43,18 @@ getGamemodesFunc.Parent  = lobbyFolder
 local COUNTDOWN      = 5    -- secondes avant le lancement
 local RETURN_DELAY   = 3    -- secondes après round avant retour lobby
 
-local ZONE_COLORS = {
-	["Clown Survival"] = Color3.fromRGB(220, 50,  50),
-	Dodgeball          = Color3.fromRGB(50,  100, 220),
-}
-local DEFAULT_COLOR = Color3.fromRGB(120, 90, 200)
-
-local ZONE_FALLBACK_POSITIONS = {
-	Vector3.new(-80, 0, 0),
-	Vector3.new( 80, 0, 0),
-	Vector3.new(  0, 0, -80),
-	Vector3.new(  0, 0,  80),
-}
-
 -- ===== État =====
 local LobbyService = {}
 
 local availableGamemodes = {}
 local roundInProgress    = false
 local lobbySpawns : { CFrame } = {}
-local zoneParts   : { [string]: BasePart } = {}
 
 -- queue par gamemode : { players: {[Player]: true}, inCountdown: bool, timeLeft: number }
 local queues : { [string]: { players: { [Player]: boolean }, inCountdown: boolean, timeLeft: number } } = {}
 
--- zone actuelle de chaque joueur
+-- gamemode dont la file est actuellement rejointe par chaque joueur (nil si aucune)
 local playerZone : { [Player]: string? } = {}
-
--- joueurs ayant rejoint la file via le bouton "Jouer" (pas de position à vérifier)
-local queuedViaButton : { [Player]: boolean } = {}
 
 -- joueurs actuellement en partie (round en cours) : interdit de rejoindre une nouvelle file.
 -- Valeur = un ID de round (pas juste `true`) : `returnToLobby` attend RETURN_DELAY avant de
@@ -114,41 +97,13 @@ local function minPlayers(name: string): number
 	return gm and gm.MinPlayers or 2
 end
 
--- ===== BillboardGui =====
+-- ===== Statut de file (HUD client) =====
 
-local function updateBillboard(gamemodeName: string)
-	local part = zoneParts[gamemodeName]
-	if not part then return end
-
-	local billboard = part:FindFirstChild("ZoneBillboard")
-	local frame     = billboard and billboard:FindFirstChild("Frame")
-	if not frame then return end
-
+local function broadcastQueueStatus(gamemodeName: string)
 	local q     = queues[gamemodeName]
 	local count = queueCount(gamemodeName)
 	local minP  = minPlayers(gamemodeName)
 
-	local countLbl  = frame:FindFirstChild("CountLabel")
-	local statusLbl = frame:FindFirstChild("StatusLabel")
-
-	if countLbl  then countLbl.Text = count .. " / " .. minP .. " joueurs" end
-	if statusLbl then
-		if roundInProgress then
-			statusLbl.Text      = "⏳ Partie en cours…"
-			statusLbl.TextColor3 = Color3.fromRGB(200, 150, 50)
-		elseif q and q.inCountdown then
-			statusLbl.Text       = "✅ Lancement…"
-			statusLbl.TextColor3 = Color3.fromRGB(80, 220, 80)
-		elseif count >= minP then
-			statusLbl.Text       = "🟢 Prêts !"
-			statusLbl.TextColor3 = Color3.fromRGB(80, 220, 80)
-		else
-			statusLbl.Text       = "En attente…"
-			statusLbl.TextColor3 = Color3.fromRGB(160, 160, 170)
-		end
-	end
-
-	-- Broadcast à tous les clients pour le HUD
 	zoneUpdateEvent:FireAllClients({
 		gamemodeName    = gamemodeName,
 		count           = count,
@@ -158,163 +113,34 @@ local function updateBillboard(gamemodeName: string)
 	})
 end
 
-local function setCountdownText(gamemodeName: string, text: string)
-	local part  = zoneParts[gamemodeName]
-	local frame = part and part:FindFirstChild("ZoneBillboard") and
-	              part:FindFirstChild("ZoneBillboard"):FindFirstChild("Frame")
-	local lbl   = frame and frame:FindFirstChild("StatusLabel")
-	if lbl then
-		lbl.Text       = text
-		lbl.TextColor3 = Color3.fromRGB(80, 220, 80)
-	end
-end
-
-local function buildBillboard(part: BasePart, gamemodeName: string, color: Color3)
-	local gm = getGamemode(gamemodeName)
-
-	local billboard = Instance.new("BillboardGui", part)
-	billboard.Name           = "ZoneBillboard"
-	billboard.Size           = UDim2.new(0, 230, 0, 120)
-	billboard.StudsOffset    = Vector3.new(0, 7, 0)
-	billboard.AlwaysOnTop    = false
-	billboard.LightInfluence = 0.25
-	billboard.MaxDistance    = 100
-	billboard.ResetOnSpawn   = false
-
-	local frame = Instance.new("Frame", billboard)
-	frame.Name                   = "Frame"
-	frame.Size                   = UDim2.new(1, 0, 1, 0)
-	frame.BackgroundColor3       = Color3.fromRGB(14, 12, 20)
-	frame.BackgroundTransparency = 0.12
-	frame.BorderSizePixel        = 0
-	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
-
-	-- Barre de couleur haute
-	local bar = Instance.new("Frame", frame)
-	bar.Size             = UDim2.new(1, 0, 0, 5)
-	bar.BackgroundColor3 = color
-	bar.BorderSizePixel  = 0
-	Instance.new("UICorner", bar).CornerRadius = UDim.new(0, 10)
-
-	local function lbl(name, text, size, bold, yPos, color3)
-		local l = Instance.new("TextLabel", frame)
-		l.Name               = name
-		l.Size               = UDim2.new(1, -12, 0, size)
-		l.Position           = UDim2.new(0, 6, 0, yPos)
-		l.BackgroundTransparency = 1
-		l.Font               = bold and Enum.Font.GothamBold or Enum.Font.Gotham
-		l.TextSize           = size - 2
-		l.TextColor3         = color3 or Color3.fromRGB(240, 240, 245)
-		l.TextXAlignment     = Enum.TextXAlignment.Center
-		l.Text               = text
-		return l
-	end
-
-	lbl("TitleLabel",  (gm and gm.Name or gamemodeName):upper(), 22, true,  10, color)
-	lbl("DescLabel",   gm and gm.Description or "",               14, false, 36, Color3.fromRGB(150, 150, 160))
-	lbl("CountLabel",  "0 / 2 joueurs",                           16, true,  58, Color3.fromRGB(220, 220, 230))
-	lbl("StatusLabel", "En attente…",                             14, false, 82, Color3.fromRGB(160, 160, 170))
-end
-
--- ===== Zones =====
-
-local function setupZonePart(part: BasePart, gamemodeName: string)
-	zoneParts[gamemodeName] = part
-	part.CanCollide   = false
-	part.CastShadow   = false
-
-	local color = ZONE_COLORS[gamemodeName] or DEFAULT_COLOR
-	buildBillboard(part, gamemodeName, color)
-	updateBillboard(gamemodeName)
-
-	part.Touched:Connect(function(hit)
-		local player = Players:GetPlayerFromCharacter(hit.Parent)
-		if not player then return end
-		joinQueue(player, gamemodeName)
-	end)
-
-	-- TouchEnded + vérification heartbeat (TouchEnded peut être unreliable)
-	part.TouchEnded:Connect(function(hit)
-		local player = Players:GetPlayerFromCharacter(hit.Parent)
-		if not player or playerZone[player] ~= gamemodeName then return end
-		if queuedViaButton[player] then return end
-		task.delay(0.3, function()
-			if not player.Parent then return end
-			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-			if not hrp then return end
-			local dx = hrp.Position.X - part.Position.X
-			local dz = hrp.Position.Z - part.Position.Z
-			local dist2D = math.sqrt(dx*dx + dz*dz)
-			local threshold = math.max(part.Size.X, part.Size.Z) / 2 + 4
-			if dist2D > threshold then
-				removeFromQueues(player)
-			end
-		end)
-	end)
-end
-
-local function createProceduralZone(gamemodeName: string, pos: Vector3)
-	local color = ZONE_COLORS[gamemodeName] or DEFAULT_COLOR
-
-	-- Sol visuel
-	local floor = Instance.new("Part")
-	floor.Size         = Vector3.new(28, 0.6, 28)
-	floor.CFrame       = CFrame.new(pos.X, pos.Y + 0.3, pos.Z)
-	floor.Anchored     = true
-	floor.Color        = color
-	floor.Material     = Enum.Material.SmoothPlastic
-	floor.TopSurface   = Enum.SurfaceType.Smooth
-	floor.BottomSurface = Enum.SurfaceType.Smooth
-	floor.Parent       = workspace
-
-	-- Volume trigger (invisible, couvre la hauteur du personnage)
-	local trigger = Instance.new("Part")
-	trigger.Size         = Vector3.new(28, 10, 28)
-	trigger.CFrame       = CFrame.new(pos.X, pos.Y + 5, pos.Z)
-	trigger.Anchored     = true
-	trigger.Transparency = 1
-	trigger.CanCollide   = false
-	trigger.CastShadow   = false
-	trigger.Parent       = workspace
-
-	setupZonePart(trigger, gamemodeName)
-end
-
 -- ===== Queue / countdown =====
 
 removeFromQueues = function(player: Player)
 	local current = playerZone[player]
 	playerZone[player]       = nil
-	queuedViaButton[player]  = nil
 	playersInRound[player]   = nil
 	if current and queues[current] then
 		queues[current].players[player] = nil
-		updateBillboard(current)
+		broadcastQueueStatus(current)
 	end
 	playerZoneEvent:FireClient(player, { gamemodeName = nil })
 end
 
--- Fait rejoindre `player` à la file de `gamemodeName` (venant d'une zone
--- physique OU du bouton "Jouer" côté client). Idempotent si déjà dedans.
--- `viaButton` = true désactive la vérification de position (le joueur n'a
--- pas besoin de marcher physiquement sur la zone).
-joinQueue = function(player: Player, gamemodeName: string, viaButton: boolean?)
+-- Fait rejoindre `player` à la file de `gamemodeName` (depuis le bouton "Jouer" côté client).
+-- Idempotent si déjà dedans.
+joinQueue = function(player: Player, gamemodeName: string)
 	if not queues[gamemodeName] then return end
 	if playersInRound[player] then return end -- déjà en partie : requête ignorée (anti-triche)
 	if MatchmakingConfig.Enabled and MatchmakingService.IsSearching(player) then return end -- déjà en recherche cross-serveur
-	if playerZone[player] == gamemodeName then
-		queuedViaButton[player] = viaButton or queuedViaButton[player] or false
-		return
-	end
+	if playerZone[player] == gamemodeName then return end
 
 	if playerZone[player] then
 		removeFromQueues(player)
 	end
 
 	playerZone[player]                   = gamemodeName
-	queuedViaButton[player]              = viaButton or false
 	queues[gamemodeName].players[player] = true
-	updateBillboard(gamemodeName)
+	broadcastQueueStatus(gamemodeName)
 	playerZoneEvent:FireClient(player, { gamemodeName = gamemodeName })
 
 	local q = queues[gamemodeName]
@@ -335,7 +161,7 @@ checkAndMaybeCountdown = function(gamemodeName: string)
 	q.timeLeft    = COUNTDOWN
 	local gm = getGamemode(gamemodeName)
 	if gm then GameSettings.OpenPanel(gm) end
-	updateBillboard(gamemodeName)
+	broadcastQueueStatus(gamemodeName)
 
 	task.spawn(function()
 		-- Boucle sur q.timeLeft (pas une variable locale) : joinQueue() peut le remettre à
@@ -346,10 +172,9 @@ checkAndMaybeCountdown = function(gamemodeName: string)
 				q.inCountdown = false
 				GameSettings.ClosePanel()
 				banner("⚠️ " .. gamemodeName .. " — pas assez de joueurs, countdown annulé")
-				updateBillboard(gamemodeName)
+				broadcastQueueStatus(gamemodeName)
 				return
 			end
-			setCountdownText(gamemodeName, "🚀 Départ dans " .. q.timeLeft .. "s")
 			zoneUpdateEvent:FireAllClients({
 				gamemodeName    = gamemodeName,
 				count           = queueCount(gamemodeName),
@@ -368,7 +193,7 @@ checkAndMaybeCountdown = function(gamemodeName: string)
 		else
 			q.inCountdown = false
 			GameSettings.ClosePanel()
-			updateBillboard(gamemodeName)
+			broadcastQueueStatus(gamemodeName)
 		end
 	end)
 end
@@ -394,14 +219,13 @@ startRound = function(gamemodeName: string)
 	-- (inRound = true : le client doit garder le bouton "Jouer" caché jusqu'au retour au lobby)
 	for p in q.players do
 		playerZone[p]      = nil
-		queuedViaButton[p] = nil
 		playersInRound[p]  = thisRoundId
 		playerZoneEvent:FireClient(p, { gamemodeName = nil, inRound = true })
 	end
 	q.players = {}
 
 	for _, name in queues do
-		updateBillboard(name)
+		broadcastQueueStatus(name)
 	end
 
 	if #players < minPlayers(gamemodeName) then
@@ -429,7 +253,7 @@ startRound = function(gamemodeName: string)
 
 		-- Réactive les countdowns en attente
 		for name in queues do
-			updateBillboard(name)
+			broadcastQueueStatus(name)
 			checkAndMaybeCountdown(name)
 		end
 	end)
@@ -459,31 +283,6 @@ returnToLobby = function(players: { Player }, thisRoundId: number)
 		end)
 	end
 end
-
--- ===== Heartbeat : backup pour détecter les sorties de zone =====
-task.spawn(function()
-	while true do
-		task.wait(2)
-		for player, gamemodeName in playerZone do
-			if not player.Parent then
-				removeFromQueues(player)
-				continue
-			end
-			if queuedViaButton[player] then continue end
-			local part = zoneParts[gamemodeName]
-			if not part then continue end
-			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-			if not hrp then continue end
-			local dx       = hrp.Position.X - part.Position.X
-			local dz       = hrp.Position.Z - part.Position.Z
-			local dist2D   = math.sqrt(dx*dx + dz*dz)
-			local threshold = math.max(part.Size.X, part.Size.Z) / 2 + 4
-			if dist2D > threshold then
-				removeFromQueues(player)
-			end
-		end
-	end
-end)
 
 -- ===== Anti-triche (hub) : vitesse + vol =====
 -- Même principe que l'anti-triche de Clown Survival (voir ClownSurvival.luau ->
@@ -561,35 +360,19 @@ function LobbyService.Start(gamemodes)
 				end
 			end
 		end
-
-		-- Zones définies dans la map (BasePart avec Attribute "Gamemode")
-		for _, desc in cloned:GetDescendants() do
-			if desc:IsA("BasePart") then
-				local gmName = desc:GetAttribute("Gamemode")
-				if gmName and queues[gmName] then
-					setupZonePart(desc, gmName)
-				end
-			end
-		end
 	end
 
-	-- Podium 3D des classements (voir LeaderboardPodium.luau) : utilise la Part "PodiumAnchor" de
-	-- la map Lobby si présente, sinon une position de repli fixe.
-	LeaderboardPodium.Build(clonedLobby)
+	-- Podium 3D des classements (voir LeaderboardPodium.luau) : Model "LeaderboardPodium" (vraies
+	-- Parts Rank1/2/3 + Board) posé à la main directement dans workspace, à côté du hub.
+	LeaderboardPodium.Build()
 
-	-- Zones procédurales pour les gamemodes sans zone définie en Studio
-	local posIdx = 1
-	for _, gm in gamemodes do
-		if not zoneParts[gm.Name] then
-			local pos = ZONE_FALLBACK_POSITIONS[posIdx] or Vector3.new(0, 0, 0)
-			createProceduralZone(gm.Name, pos)
-			posIdx += 1
-		end
-	end
-
-	-- SpawnLocation(s) placées directement dans Workspace (prioritaires sur SpawnPoints/
-	-- et sur la grille de secours) : si le level designer a posé un SpawnLocation natif
-	-- dans Studio, on veut spawn dessus plutôt qu'ignorer son emplacement.
+	-- SpawnLocation(s) placées directement dans Workspace : si le level designer en a posé une,
+	-- Roblox sait déjà spawner les joueurs dessus nativement — pas besoin (et pas question) de
+	-- forcer un CFrame par-dessus, ça casserait le bouton Studio "Tester ici" (spawn à la position
+	-- du curseur en Edit mode), qui compte justement sur l'absence d'un script qui replace le
+	-- joueur après coup. `lobbySpawns` reste seulement utile pour le retour au lobby après un round
+	-- (voir plus haut, EndRound) et pour le cas fallback ci-dessous.
+	local usingNativeSpawnLocation = false
 	do
 		local nativeSpawns : { CFrame } = {}
 		for _, inst in workspace:GetDescendants() do
@@ -599,6 +382,7 @@ function LobbyService.Start(gamemodes)
 		end
 		if #nativeSpawns > 0 then
 			lobbySpawns = nativeSpawns
+			usingNativeSpawnLocation = true
 		end
 	end
 
@@ -612,13 +396,17 @@ function LobbyService.Start(gamemodes)
 
 	-- Gestion des joueurs
 	Players.PlayerAdded:Connect(function(player)
-		task.spawn(function()
-			local char = player.Character or player.CharacterAdded:Wait()
-			local hrp  = char and char:WaitForChild("HumanoidRootPart", 5)
-			if hrp and #lobbySpawns > 0 then
-				hrp.CFrame = lobbySpawns[math.random(1, #lobbySpawns)]
-			end
-		end)
+		if not usingNativeSpawnLocation then
+			-- Pas de SpawnLocation native : Roblox n'a rien pour placer le joueur tout seul
+			-- (SpawnPoints custom ou grille de secours), donc on le fait à la main.
+			task.spawn(function()
+				local char = player.Character or player.CharacterAdded:Wait()
+				local hrp  = char and char:WaitForChild("HumanoidRootPart", 5)
+				if hrp and #lobbySpawns > 0 then
+					hrp.CFrame = lobbySpawns[math.random(1, #lobbySpawns)]
+				end
+			end)
+		end
 		banner("👋 " .. player.Name .. " a rejoint le lobby !")
 	end)
 
@@ -631,13 +419,13 @@ function LobbyService.Start(gamemodes)
 		if type(gamemodeName) ~= "string" then return end
 
 		if not MatchmakingConfig.Enabled then
-			joinQueue(player, gamemodeName, true)
+			joinQueue(player, gamemodeName)
 			return
 		end
 
 		if not queues[gamemodeName] then return end
 		if playersInRound[player] then return end -- déjà en partie (anti-triche)
-		if playerZone[player] then return end -- déjà dans une file locale (zone) : pas de double recherche
+		if playerZone[player] then return end -- déjà dans une file locale : pas de double recherche
 		if MatchmakingService.IsSearching(player) then return end
 
 		MatchmakingService.Enqueue(player, gamemodeName)
@@ -667,7 +455,7 @@ function LobbyService.Start(gamemodes)
 		return list
 	end
 
-	banner("🏠 Lobby ouvert — montez sur une zone pour jouer !")
+	banner("🏠 Lobby ouvert — clique sur JOUER pour choisir un mode !")
 	print("[LobbyService] démarré ✅")
 end
 

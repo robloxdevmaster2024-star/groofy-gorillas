@@ -10,9 +10,14 @@
 -- pour tout le monde à un instant donné) : c'est un objet physique unique du monde, façon borne
 -- d'arcade, pas une UI par joueur.
 --
--- Convention Studio : une Part nommée "PodiumAnchor" n'importe où dans ServerStorage.Venues.Lobby
--- donne l'emplacement + l'orientation (le panneau s'affiche sur sa face -Z/"Front" — orienter la
--- part en conséquence). Sans map Lobby (ou sans cette Part), position de repli fixe.
+-- Convention Studio : un Model nommé "LeaderboardPodium" posé directement dans le Workspace (à
+-- côté du reste du hub — contrairement aux Venues de gamemodes, le Lobby n'est construit qu'une
+-- fois au démarrage du serveur et n'est jamais rechargé, donc pas besoin de le stocker en template
+-- dans ServerStorage), contenant de VRAIES Parts placées à la main :
+--   Rank1, Rank2, Rank3  → les 3 socles (le script lit directement leur CFrame/Size existants,
+--                          rien n'est recréé — les redimensionner/déplacer dans Studio suffit)
+--   Board                → le panneau (le SurfaceGui s'affiche sur sa face -Z/"Front" — orienter
+--                          la Part en conséquence)
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players           = game:GetService("Players")
@@ -24,25 +29,18 @@ local LeaderboardsConfig = require(
 local LeaderboardService = require(script.Parent.LeaderboardService)
 local WeekId              = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("WeekId"))
 
-local FALLBACK_CFRAME = CFrame.new(0, 0, 35)
-
-local PLATFORM_HEIGHTS = { 3, 2, 1.4 }  -- 1er, 2e, 3e (marches de podium)
 local PLATFORM_COLORS  = {
 	Color3.fromRGB(255, 210, 40),  -- or
 	Color3.fromRGB(200, 200, 210), -- argent
 	Color3.fromRGB(205, 130, 60),  -- bronze
 }
-local PLATFORM_SIZE_XZ = 6
-local PLATFORM_GAP     = 0.6
 
--- Grossissement x3 : le panneau devient 3x plus grand en studs, mais le CANVAS pixel (donc toute
--- la mise en page ci-dessous, définie en pixels fixes) reste identique en divisant PixelsPerStud
--- par le même facteur — chaque pixel couvre juste 3x plus d'espace physique, donc tout (texte,
--- onglets, lignes) grossit proportionnellement sans rien retoucher au layout. Le bas du panneau
--- reste ancré au même endroit (voir buildBoard : le calcul de hauteur du CFrame est déjà écrit de
--- façon à ce que le BAS soit fixe indépendamment de BOARD_H, seul le centre remonte).
+-- Grossissement x3 : le panneau physique (voir "Board" dans Studio) a été construit 3x plus grand
+-- en studs, mais le CANVAS pixel (donc toute la mise en page ci-dessous, définie en pixels fixes)
+-- reste identique en divisant PixelsPerStud par le même facteur — chaque pixel couvre juste 3x plus
+-- d'espace physique, donc tout (texte, onglets, lignes) grossit proportionnellement sans rien
+-- retoucher au layout.
 local BOARD_SCALE       = 3
-local BOARD_W, BOARD_H  = 12 * BOARD_SCALE, 7 * BOARD_SCALE -- studs (largeur +2 : la rangée d'onglets de board est passée de 3 à 4 colonnes)
 local PIXELS_PER_STUD   = 50 / BOARD_SCALE
 local TAB_ROW_H_PX      = 42
 local ROW_H_PX          = 30
@@ -58,70 +56,68 @@ local AVATAR_ROTATE_SPEED = math.rad(30) -- rad/s, rotation lente façon vitrine
 
 local LeaderboardPodium = {}
 
-local function findAnchorCFrame(lobbyModel: Instance?): CFrame
-	if lobbyModel then
-		local anchor = lobbyModel:FindFirstChild("PodiumAnchor", true)
-		if anchor and anchor:IsA("BasePart") then
-			return anchor.CFrame
-		end
+-- Cherche les vraies Parts placées à la main dans Studio (voir convention en tête de fichier).
+-- Retourne nil si le Model ou une des 4 Parts manque.
+local function findPhysicalPodium(): { ranks: { BasePart }, board: BasePart }?
+	local podiumModel = workspace:FindFirstChild("LeaderboardPodium", true)
+	if not podiumModel then return nil end
+
+	local ranks = {}
+	for i = 1, 3 do
+		local part = podiumModel:FindFirstChild("Rank" .. i)
+		if not (part and part:IsA("BasePart")) then return nil end
+		ranks[i] = part
 	end
-	return FALLBACK_CFRAME
+
+	local board = podiumModel:FindFirstChild("Board")
+	if not (board and board:IsA("BasePart")) then return nil end
+
+	return { ranks = ranks, board = board }
 end
 
-local function buildPlatforms(model: Model, originCFrame: CFrame)
+-- Ajoute le BillboardGui (nom + score) sur un socle déjà existant (physique ou généré) — ne touche
+-- ni à sa taille ni à sa position : la hauteur du label se cale sur part.Size.Y actuel, donc un
+-- socle redimensionné à la main dans Studio garde un label bien placé sans toucher au code.
+local function attachRankBillboard(part: BasePart, colorIndex: number)
+	-- Au-dessus de la tête de l'avatar affiché sur ce socle (voir placeAvatarOnSlot) plutôt
+	-- que juste au-dessus du socle lui-même, sinon le nom/score flotterait dans le torse.
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name        = "RankLabel"
+	billboard.Size        = UDim2.new(0, 150, 0, 60)
+	billboard.StudsOffset = Vector3.new(0, part.Size.Y / 2 + 7.2, 0)
+	billboard.AlwaysOnTop = true
+	billboard.Parent      = part
+
+	local nameLbl = Instance.new("TextLabel", billboard)
+	nameLbl.Name               = "NameLbl"
+	nameLbl.Size               = UDim2.new(1, 0, 0.55, 0)
+	nameLbl.BackgroundTransparency = 1
+	nameLbl.Font               = Enum.Font.FredokaOne
+	nameLbl.TextSize           = 18
+	nameLbl.TextColor3         = Color3.new(1, 1, 1)
+	nameLbl.TextStrokeTransparency = 0.3
+	nameLbl.Text               = "—"
+
+	local scoreLbl = Instance.new("TextLabel", billboard)
+	scoreLbl.Name               = "ScoreLbl"
+	scoreLbl.Size               = UDim2.new(1, 0, 0.45, 0)
+	scoreLbl.Position           = UDim2.new(0, 0, 0.55, 0)
+	scoreLbl.BackgroundTransparency = 1
+	scoreLbl.Font               = Enum.Font.GothamBold
+	scoreLbl.TextSize           = 14
+	scoreLbl.TextColor3         = PLATFORM_COLORS[colorIndex]
+	scoreLbl.TextStrokeTransparency = 0.5
+	scoreLbl.Text               = ""
+
+	return { name = nameLbl, score = scoreLbl }
+end
+
+local function attachBillboards(parts: { BasePart })
 	local billboards = {}
-	local parts       = {}
-
-	for i = 1, 3 do
-		local height = PLATFORM_HEIGHTS[i]
-		local xOffset = (i == 1 and 0) or (i == 2 and -(PLATFORM_SIZE_XZ + PLATFORM_GAP)) or (PLATFORM_SIZE_XZ + PLATFORM_GAP)
-
-		local part = Instance.new("Part")
-		part.Name          = "Rank" .. i
-		part.Size          = Vector3.new(PLATFORM_SIZE_XZ, height, PLATFORM_SIZE_XZ)
-		part.CFrame        = originCFrame * CFrame.new(xOffset, height / 2, 0)
-		part.Anchored      = true
-		part.Color         = PLATFORM_COLORS[i]
-		part.Material      = Enum.Material.SmoothPlastic
-		part.TopSurface    = Enum.SurfaceType.Smooth
-		part.BottomSurface = Enum.SurfaceType.Smooth
-		part.Parent        = model
-		parts[i]           = part
-
-		-- Au-dessus de la tête de l'avatar affiché sur ce socle (voir placeAvatarOnSlot) plutôt
-		-- que juste au-dessus du socle lui-même, sinon le nom/score flotterait dans le torse.
-		local billboard = Instance.new("BillboardGui")
-		billboard.Name        = "RankLabel"
-		billboard.Size        = UDim2.new(0, 150, 0, 60)
-		billboard.StudsOffset = Vector3.new(0, height / 2 + 7.2, 0)
-		billboard.AlwaysOnTop = true
-		billboard.Parent      = part
-
-		local nameLbl = Instance.new("TextLabel", billboard)
-		nameLbl.Name               = "NameLbl"
-		nameLbl.Size               = UDim2.new(1, 0, 0.55, 0)
-		nameLbl.BackgroundTransparency = 1
-		nameLbl.Font               = Enum.Font.FredokaOne
-		nameLbl.TextSize           = 18
-		nameLbl.TextColor3         = Color3.new(1, 1, 1)
-		nameLbl.TextStrokeTransparency = 0.3
-		nameLbl.Text               = "—"
-
-		local scoreLbl = Instance.new("TextLabel", billboard)
-		scoreLbl.Name               = "ScoreLbl"
-		scoreLbl.Size               = UDim2.new(1, 0, 0.45, 0)
-		scoreLbl.Position           = UDim2.new(0, 0, 0.55, 0)
-		scoreLbl.BackgroundTransparency = 1
-		scoreLbl.Font               = Enum.Font.GothamBold
-		scoreLbl.TextSize           = 14
-		scoreLbl.TextColor3         = PLATFORM_COLORS[i]
-		scoreLbl.TextStrokeTransparency = 0.5
-		scoreLbl.Text               = ""
-
-		billboards[i] = { name = nameLbl, score = scoreLbl }
+	for i, part in parts do
+		billboards[i] = attachRankBillboard(part, i)
 	end
-
-	return billboards, parts
+	return billboards
 end
 
 -- ===== Avatars affichés sur les socles (top 3 en direct) =====
@@ -206,21 +202,9 @@ local function makeTabButton(parent: Instance, text: string, widthScale: number,
 	return btn
 end
 
-local function buildBoard(model: Model, originCFrame: CFrame)
-	-- Positionné DERRIÈRE le podium (+Z local, à l'opposé de la face -Z/"Front" par laquelle les
-	-- joueurs approchent) et bien AU-DESSUS des avatars affichés sur les socles, pour ne jamais
-	-- passer devant/masquer le podium lui-même (voir placeAvatarOnPlatform pour la hauteur d'un
-	-- avatar debout ~5-6 studs + le billboard nom/score par-dessus).
-	local boardPart = Instance.new("Part")
-	boardPart.Name          = "Board"
-	boardPart.Size          = Vector3.new(BOARD_W, BOARD_H, 0.4)
-	boardPart.CFrame        = originCFrame
-		* CFrame.new(0, PLATFORM_HEIGHTS[1] + BOARD_H / 2 + 9, PLATFORM_SIZE_XZ / 2 + 2.5)
-	boardPart.Anchored      = true
-	boardPart.Color         = Color3.fromRGB(24, 24, 30)
-	boardPart.Material      = Enum.Material.SmoothPlastic
-	boardPart.Parent        = model
-
+-- Construit le SurfaceGui (onglets + liste) sur le panneau physique "Board" — la taille du canvas
+-- (PixelsPerStud) suit automatiquement le Size réel de la Part.
+local function attachBoardGui(boardPart: BasePart)
 	local gui = Instance.new("SurfaceGui")
 	gui.Name           = "Board"
 	gui.Face           = Enum.NormalId.Front
@@ -335,16 +319,17 @@ local function makeRow(parent: Instance, entry, order: number, board)
 	scoreLbl.Text               = LeaderboardsConfig.FormatScore(board, entry.score)
 end
 
-function LeaderboardPodium.Build(lobbyModel: Instance?)
-	local originCFrame = findAnchorCFrame(lobbyModel)
+function LeaderboardPodium.Build()
+	local physical = findPhysicalPodium()
+	if not physical then
+		warn("[LeaderboardPodium] Model 'LeaderboardPodium' (Rank1/2/3 + Board) introuvable dans workspace — podium non construit.")
+		return nil
+	end
 
-	local model = Instance.new("Model")
-	model.Name = "LeaderboardPodium"
-
-	local billboards, platformParts = buildPlatforms(model, originCFrame)
-	local ui = buildBoard(model, originCFrame)
-
-	model.Parent = workspace
+	local platformParts = physical.ranks
+	local billboards     = attachBillboards(platformParts)
+	local ui              = attachBoardGui(physical.board)
+	local model            = physical.board.Parent :: Model -- le Model "LeaderboardPodium" déjà dans le monde
 
 	local boardsById = {}
 	for _, board in LeaderboardsConfig.BOARDS do

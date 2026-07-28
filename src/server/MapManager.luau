@@ -13,13 +13,23 @@ local Workspace     = game:GetService("Workspace")
 
 local MapManager = {}
 
--- Grille circulaire de secours (baseplate sans map)
+-- Grille circulaire de secours (baseplate sans map) — centrée sur la SpawnLocation native du
+-- Workspace si le level designer en a posé une (même logique que LobbyService pour le lobby),
+-- sinon sur l'origine du monde.
 local function defaultSpawnCFrames(count)
+	local center = Vector3.new(0, 5, 0)
+	for _, inst in Workspace:GetDescendants() do
+		if inst:IsA("SpawnLocation") then
+			center = inst.Position + Vector3.new(0, 5, 0)
+			break
+		end
+	end
+
 	local spawns = {}
 	local n = math.max(count, 8)
 	for i = 0, n - 1 do
 		local angle = (i / n) * math.pi * 2
-		table.insert(spawns, CFrame.new(math.cos(angle) * 24, 5, math.sin(angle) * 24))
+		table.insert(spawns, CFrame.new(center + Vector3.new(math.cos(angle) * 12, 0, math.sin(angle) * 12)))
 	end
 	return spawns
 end

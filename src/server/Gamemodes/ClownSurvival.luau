@@ -53,6 +53,7 @@ local rosterVisibleEvent   = getOrCreate(eventsFolder, "RosterVisible");   roste
 local rosterUpdateEvent    = getOrCreate(eventsFolder, "RosterUpdate");    rosterUpdateEvent.Name    = "RosterUpdate"
 local statusScreenEvent    = getOrCreate(eventsFolder, "StatusScreen");    statusScreenEvent.Name    = "StatusScreen"
 local screamCountdownEvent = getOrCreate(eventsFolder, "ScreamCountdown"); screamCountdownEvent.Name = "ScreamCountdown"
+local clownGazeEvent       = getOrCreate(eventsFolder, "ClownGaze");       clownGazeEvent.Name       = "ClownGaze"
 
 local ClownSurvival = {}
 
@@ -106,6 +107,8 @@ local running = false
 local settings = ClownSurvival.DefaultSettings
 local savedLighting: { [string]: any }? = nil
 local roundStartTime = 0
+local redStainParts: { [Player]: BasePart } = {} -- "red stain" façon Dead by Daylight, voir attachRedStain
+local lastGazeUpdate: { [Player]: number } = {}
 
 -- Nombre de coups réussis (contamination OU élimination) par clown pendant CE round — remonté à
 -- RoundRunner via GetKillCounts() avant Stop(), comme GetWinnerRoles(), pour être persisté en
@@ -336,18 +339,38 @@ local SHOULDER_SWING_ROT = CFrame.Angles(math.rad(-10), 0, math.rad(-50))  -- br
 local ELBOW_READY_ROT    = CFrame.Angles(0, 0, math.rad(-100)) -- coude plié (batte ramenée près de la tête)
 local ELBOW_SWING_ROT    = CFrame.Angles(0, 0, math.rad(-20))  -- coude tendu (extension pendant le swing)
 
+-- Anticipation (avant le "out" existant) et prolongement (après) : le swing d'origine allait
+-- directement READY → SWING → READY (2 poses). On ajoute une pose WINDUP légèrement AU-DELÀ de
+-- READY (le bras recule un peu plus loin avant de partir, façon élan) et une pose FOLLOW un peu
+-- AU-DELÀ de SWING (le bras continue sa course après l'impact avant de revenir) — 4 poses au lieu
+-- de 2, mêmes principes d'animation que le reste du jeu (anticipation / action / follow-through /
+-- retour), toujours interpolées via CFrame:Lerp sur les Motor6D, pas une vraie Animation asset.
+local SHOULDER_WINDUP_ROT = CFrame.Angles(math.rad(-25), 0, math.rad(-175))
+local ELBOW_WINDUP_ROT    = CFrame.Angles(0, 0, math.rad(-115))
+local SHOULDER_FOLLOW_ROT = CFrame.Angles(math.rad(-5), 0, math.rad(-15))
+local ELBOW_FOLLOW_ROT    = CFrame.Angles(0, 0, math.rad(5))
+
 -- R6 (avatar de test Studio) : un seul joint "Right Shoulder", pas de coude — amplitude un peu
 -- réduite car le bras entier est rigide (pas d'extension de coude pour ajouter du mouvement).
-local R6_SHOULDER_READY_ROT = CFrame.Angles(math.rad(-15), 0, math.rad(-140))
-local R6_SHOULDER_SWING_ROT = CFrame.Angles(math.rad(-10), 0, math.rad(-55))
+local R6_SHOULDER_READY_ROT  = CFrame.Angles(math.rad(-15), 0, math.rad(-140))
+local R6_SHOULDER_SWING_ROT  = CFrame.Angles(math.rad(-10), 0, math.rad(-55))
+local R6_SHOULDER_WINDUP_ROT = CFrame.Angles(math.rad(-20), 0, math.rad(-160))
+local R6_SHOULDER_FOLLOW_ROT = CFrame.Angles(math.rad(-5), 0, math.rad(-20))
 
 -- Pose de la batte dans la main : reste la même orientation de prise qu'avant, avec juste un
 -- petit "snap" de poignet en plus (le gros du mouvement vient maintenant du bras, pas du poignet).
 local BAT_REST_C0  = CFrame.new(0, -0.6, -0.25) * CFrame.Angles(math.rad(90), 0, math.rad(90))
 local BAT_SWING_C0 = BAT_REST_C0 * CFrame.Angles(0, 0, math.rad(-45))
+-- Rotations (pas des CFrame absolus) : appliquées relativement au restC0 de CHAQUE rig (R15 et R6
+-- ont des restC0 différents, voir getRightHandInfo), même principe que swingC0 déjà géré ainsi.
+local BAT_WINDUP_ROT = CFrame.Angles(0, 0, math.rad(20))
+local BAT_FOLLOW_ROT = CFrame.Angles(0, 0, math.rad(-60))
 
-local SWING_OUT_TIME  = 0.25 -- s : aller vers la pose d'impact (~0.55s l'aller-retour, assez lisible)
-local SWING_BACK_TIME = 0.30 -- s : retour vers la pose prête
+-- 4 phases : élan arrière, frappe (rapide = impact qui claque), prolongement, retour en douceur.
+local SWING_WINDUP_TIME = 0.08
+local SWING_STRIKE_TIME = 0.14 -- volontairement la plus courte : le "snap" doit être net
+local SWING_FOLLOW_TIME = 0.10
+local SWING_BACK_TIME   = 0.28
 
 -- Cherche un Motor6D par nom n'importe où dans le personnage (le 2e argument `true` de
 -- FindFirstChild rend la recherche récursive), sans dépendre de sa profondeur exacte dans le rig.
@@ -356,11 +379,11 @@ local function findMotor(character: Model, name: string): Motor6D?
 	return inst and inst:IsA("Motor6D") and inst or nil
 end
 
--- Batte + bras de chaque clown : { joints = { {motor, baseC0, restC0, swingC0}, ... },
--- animPhase ("out"|"back"|nil), animStart }. `joints` contient toujours le Motor6D de la batte,
--- et en plus l'épaule/le coude si le rig les expose (R15) ou juste l'épaule (R6).
--- animPhase/animStart sont mis à jour par stepBatAnimations() (Heartbeat), sans dépendre
--- du comportement implicite de TweenService sur un Motor6D créé à la volée.
+-- Batte + bras de chaque clown : { joints = { {motor, baseC0, windupC0, restC0, swingC0, followC0}, ... },
+-- animPhaseIndex (index dans SWING_PHASES, nil si pas en cours), animStart }. `joints` contient
+-- toujours le Motor6D de la batte, et en plus l'épaule/le coude si le rig les expose (R15) ou juste
+-- l'épaule (R6). animPhaseIndex/animStart sont mis à jour par stepBatAnimations() (Heartbeat), sans
+-- dépendre du comportement implicite de TweenService sur un Motor6D créé à la volée.
 local batRigs: { [Player]: any } = {}
 
 -- ===== Helpers =====
@@ -384,6 +407,71 @@ local function removeInfectedLook(player: Player)
 	local char = player.Character
 	local hl = char and char:FindFirstChild("InfectedHighlight")
 	if hl then hl:Destroy() end
+end
+
+-- ===== "Red stain" façon Dead by Daylight =====
+-- Lueur rouge projetée au sol devant le clown, dans la direction de SA CAMÉRA (pas juste
+-- l'orientation du corps) — indice pour les enfants (deviner où il regarde) que le clown lui-même
+-- ne voit pas (masqué côté client, voir ClownSurvivalRedStain.client.luau). Repositionnée/réorientée
+-- en entier à chaque update plutôt que suivie par weld : pas besoin de physique, juste un CFrame
+-- recalculé côté serveur à partir de la position HRP actuelle (autoritaire) + direction envoyée par
+-- le client (cosmétique, aucune validation stricte nécessaire).
+local RED_STAIN_RANGE = 18
+local RED_STAIN_ANGLE = 42
+local GAZE_UPDATE_MIN_INTERVAL = 0.05 -- s, anti-spam de l'event ClownGaze (20 Hz max)
+
+local function attachRedStain(player: Player)
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not char or not hrp or char:FindFirstChild("ClownRedStain") then return end
+
+	local part = Instance.new("Part")
+	part.Name          = "ClownRedStain"
+	part.Size           = Vector3.new(0.2, 0.2, 0.2)
+	part.Transparency   = 1
+	part.CanCollide      = false
+	part.CanQuery        = false
+	part.CastShadow      = false
+	part.Anchored        = true
+	part.CFrame          = hrp.CFrame
+	part.Parent          = char
+
+	local light = Instance.new("SpotLight")
+	light.Name       = "Beam"
+	light.Face       = Enum.NormalId.Front -- -Z local = LookVector, cf. CFrame.lookAt utilisé plus bas
+	light.Color      = Color3.fromRGB(255, 25, 25)
+	light.Brightness = 3.5
+	light.Range      = RED_STAIN_RANGE
+	light.Angle      = RED_STAIN_ANGLE
+	light.Shadows    = false
+	light.Parent     = part
+
+	redStainParts[player] = part
+end
+
+local function removeRedStain(player: Player)
+	local part = redStainParts[player]
+	if part then part:Destroy() end
+	redStainParts[player] = nil
+end
+
+-- gazeDir : direction caméra envoyée par le client (voir clownGazeEvent plus bas), pas forcément
+-- horizontale (le joueur peut lever/baisser la caméra) — on la ramène à un mélange fixe horizontale
+-- + inclinaison vers le bas, sinon la tache disparaît en regardant le ciel ou fonce dans les pieds
+-- en regardant par terre.
+local function updateRedStainGaze(player: Player, gazeDir: Vector3)
+	local part = redStainParts[player]
+	local hrp  = getHRP(player)
+	if not part or not part.Parent or not hrp then return end
+
+	local horizontal = Vector3.new(gazeDir.X, 0, gazeDir.Z)
+	if horizontal.Magnitude < 0.01 then return end
+	horizontal = horizontal.Unit
+
+	local tiltedDir = (horizontal + Vector3.new(0, -0.55, 0)).Unit
+	local origin    = hrp.Position + Vector3.new(0, 1.4, 0) + horizontal * 1.0
+
+	part.CFrame = CFrame.lookAt(origin, origin + tiltedDir)
 end
 
 -- Sortie de partie (plafond de clowns atteint) : grisé + immobilisé, comme les éliminés Dodgeball.
@@ -866,18 +954,28 @@ local function getRightHandInfo(char: Model): (BasePart?, CFrame, CFrame)
 	return hand, BAT_REST_C0, BAT_SWING_C0
 end
 
--- Ajoute à `joints` une entrée pour le Motor6D `name` s'il existe dans le personnage, avec sa
--- pose "prête" et sa pose "impact" calculées à partir de sa pose neutre actuelle (`baseC0`).
+-- Ajoute à `joints` une entrée pour le Motor6D `name` s'il existe dans le personnage, avec ses 4
+-- poses (élan/prête/impact/prolongement) calculées à partir de sa pose neutre actuelle (`baseC0`).
 -- `baseC0` est conservé pour pouvoir restaurer le bras à la normale dans unequipBat().
-local function addJoint(joints: { any }, character: Model, name: string, readyRot: CFrame, swingRot: CFrame)
+local function addJoint(
+	joints: { any },
+	character: Model,
+	name: string,
+	windupRot: CFrame,
+	readyRot: CFrame,
+	swingRot: CFrame,
+	followRot: CFrame
+)
 	local motor = findMotor(character, name)
 	if not motor then return end
 	local baseC0 = motor.C0
 	table.insert(joints, {
 		motor = motor,
 		baseC0 = baseC0,
+		windupC0 = baseC0 * windupRot,
 		restC0 = baseC0 * readyRot,
 		swingC0 = baseC0 * swingRot,
+		followC0 = baseC0 * followRot,
 	})
 end
 
@@ -904,17 +1002,28 @@ local function equipBat(player: Player)
 	motor.C0 = restC0
 	motor.Parent = hand
 
-	local joints = { { motor = motor, baseC0 = restC0, restC0 = restC0, swingC0 = swingC0 } }
+	-- La batte elle-même n'a pas de pose neutre "base" à multiplier (restC0/swingC0 lui sont déjà
+	-- fournis tout faits par getRightHandInfo) — windup/follow dérivés directement en plus.
+	local joints = {
+		{
+			motor = motor,
+			baseC0 = restC0,
+			windupC0 = restC0 * BAT_WINDUP_ROT,
+			restC0 = restC0,
+			swingC0 = swingC0,
+			followC0 = restC0 * BAT_FOLLOW_ROT,
+		},
+	}
 
 	local hum = char:FindFirstChildOfClass("Humanoid")
 	if hum and hum.RigType == Enum.HumanoidRigType.R6 then
-		addJoint(joints, char, "Right Shoulder", R6_SHOULDER_READY_ROT, R6_SHOULDER_SWING_ROT)
+		addJoint(joints, char, "Right Shoulder", R6_SHOULDER_WINDUP_ROT, R6_SHOULDER_READY_ROT, R6_SHOULDER_SWING_ROT, R6_SHOULDER_FOLLOW_ROT)
 	else
-		addJoint(joints, char, "RightShoulder", SHOULDER_READY_ROT, SHOULDER_SWING_ROT)
-		addJoint(joints, char, "RightElbow", ELBOW_READY_ROT, ELBOW_SWING_ROT)
+		addJoint(joints, char, "RightShoulder", SHOULDER_WINDUP_ROT, SHOULDER_READY_ROT, SHOULDER_SWING_ROT, SHOULDER_FOLLOW_ROT)
+		addJoint(joints, char, "RightElbow", ELBOW_WINDUP_ROT, ELBOW_READY_ROT, ELBOW_SWING_ROT, ELBOW_FOLLOW_ROT)
 	end
 
-	batRigs[player] = { joints = joints, animPhase = nil, animStart = 0 }
+	batRigs[player] = { joints = joints, animPhaseIndex = nil, animStart = 0 }
 	print("[Clown Survival] Batte équipée pour " .. player.Name .. " (main: " .. hand.Name .. ", " .. #joints .. " articulation(s) animée(s))")
 end
 
@@ -935,7 +1044,16 @@ local function unequipBat(player: Player)
 	batRigs[player] = nil
 end
 
--- Démarre l'animation de swing (aller vers la pose de frappe, puis retour).
+-- Description de chacune des 4 phases du swing : quelles poses relie-t-elle (par nom de champ dans
+-- chaque joint), sa durée, et son easing. Traversées dans l'ordre par stepBatAnimations().
+local SWING_PHASES = {
+	{ name = "windup", from = "restC0",   to = "windupC0", duration = SWING_WINDUP_TIME, ease = "out" },
+	{ name = "strike", from = "windupC0", to = "swingC0",  duration = SWING_STRIKE_TIME, ease = "in"  },
+	{ name = "follow", from = "swingC0",  to = "followC0", duration = SWING_FOLLOW_TIME, ease = "out" },
+	{ name = "back",   from = "followC0", to = "restC0",   duration = SWING_BACK_TIME,   ease = "out" },
+}
+
+-- Démarre l'animation de swing (élan → frappe → prolongement → retour, voir SWING_PHASES).
 -- La progression réelle est calculée à chaque frame par stepBatAnimations().
 local function playSwingAnimation(player: Player)
 	local rig = batRigs[player]
@@ -943,7 +1061,7 @@ local function playSwingAnimation(player: Player)
 		warn("[Clown Survival] Swing sans batte équipée pour " .. player.Name .. " (rig introuvable)")
 		return
 	end
-	rig.animPhase = "out"
+	rig.animPhaseIndex = 1
 	rig.animStart = os.clock()
 end
 
@@ -953,25 +1071,23 @@ end
 local function stepBatAnimations()
 	local now = os.clock()
 	for _, rig in batRigs do
-		if rig.animPhase then
-			local duration = rig.animPhase == "out" and SWING_OUT_TIME or SWING_BACK_TIME
-			local alpha = math.clamp((now - rig.animStart) / duration, 0, 1)
-			-- Easing : accélération à l'aller (coup qui part vite), décélération au retour
-			-- (le bras se "range" en douceur) — plus lisible/"propre" qu'une interpolation linéaire.
-			local eased = (rig.animPhase == "out") and (alpha * alpha) or (1 - (1 - alpha) * (1 - alpha))
+		if rig.animPhaseIndex then
+			local phase = SWING_PHASES[rig.animPhaseIndex]
+			local alpha = math.clamp((now - rig.animStart) / phase.duration, 0, 1)
+			-- "out" : décélère en entrant dans la pose (élan/prolongement/retour, mouvements qui se
+			-- posent). "in" : accélère à fond (la frappe elle-même, doit claquer sec).
+			local eased = (phase.ease == "in") and (alpha * alpha) or (1 - (1 - alpha) * (1 - alpha))
 
 			for _, j in rig.joints do
-				local fromC0 = (rig.animPhase == "out") and j.restC0 or j.swingC0
-				local toC0   = (rig.animPhase == "out") and j.swingC0 or j.restC0
-				j.motor.C0 = fromC0:Lerp(toC0, eased)
+				j.motor.C0 = (j[phase.from] :: CFrame):Lerp(j[phase.to] :: CFrame, eased)
 			end
 
 			if alpha >= 1 then
-				if rig.animPhase == "out" then
-					rig.animPhase = "back"
+				if rig.animPhaseIndex < #SWING_PHASES then
+					rig.animPhaseIndex += 1
 					rig.animStart = now
 				else
-					rig.animPhase = nil
+					rig.animPhaseIndex = nil
 					for _, j in rig.joints do
 						j.motor.C0 = j.restC0
 					end
@@ -1271,6 +1387,7 @@ end
 local function grantWeapon(player: Player)
 	setActiveEvent:FireClient(player, true)
 	equipBat(player)
+	attachRedStain(player)
 end
 
 local function countActiveClowns(): number
@@ -1866,6 +1983,22 @@ function ClownSurvival.Start(ctx)
 		end
 	end)
 	table.insert(connections, swingConn)
+
+	-- Écoute la direction caméra des clowns pour orienter leur "red stain" (voir ClownGaze plus
+	-- haut) — envoyée en continu par ClownSurvivalRedStain.client.luau tant qu'ils sont clowns.
+	local gazeConn = clownGazeEvent.OnServerEvent:Connect(function(player, gazeDir)
+		if not running or not infected[player] or not participants[player] then return end
+		if typeof(gazeDir) ~= "Vector3" then return end
+		local dir = gazeDir.Unit
+		if dir ~= dir then return end -- garde-fou NaN (vecteur nul normalisé)
+
+		local now = tick()
+		if lastGazeUpdate[player] and (now - lastGazeUpdate[player]) < GAZE_UPDATE_MIN_INTERVAL then return end
+		lastGazeUpdate[player] = now
+
+		updateRedStainGaze(player, dir)
+	end)
+	table.insert(connections, gazeConn)
 end
 
 function ClownSurvival.CheckWin()
@@ -2022,6 +2155,7 @@ function ClownSurvival.Stop()
 	for player in participants do
 		removeInfectedLook(player)
 		removeEliminatedLook(player)
+		removeRedStain(player)
 		unequipBat(player)
 		endSlide(player) -- restaure HipHeight/BodyHeightScale si le joueur glissait encore
 		standUp(player) -- restaure HipHeight/BodyHeightScale si le joueur était encore couché
@@ -2047,6 +2181,7 @@ function ClownSurvival.Stop()
 	stamina, sprinting, sliding, lastSprintStart, staminaDepleted, prone, lastStaminaUse = {}, {}, {}, {}, {}, {}, {}
 	bhopBoost, bhopLastLand, bhopLandToken, bhopChainUsed, bhopLastPress = {}, {}, {}, {}, {}
 	dashing, lastDashUse, lastVisionUse, lastBroadcastState = {}, {}, {}, {}
+	redStainParts, lastGazeUpdate = {}, {}
 end
 
 return ClownSurvival
