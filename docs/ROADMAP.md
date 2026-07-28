@@ -277,6 +277,7 @@ supplémentaire connecté aux parts de la batte ou à `RightHand`, et vérifie `
 - Menu host (un joueur décide mode + settings)
 - Système de parties privées / lobbies
 - Daily rewards / streaks
+- Clown Survival — mécanique lumières : le clown peut allumer les lumières (avantage pour repérer les enfants ?), les enfants doivent accomplir des tâches pour les éteindre
 
 ---
 

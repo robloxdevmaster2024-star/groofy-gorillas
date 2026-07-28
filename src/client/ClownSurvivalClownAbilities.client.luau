@@ -14,6 +14,13 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService        = game:GetService("RunService")
 local Lighting          = game:GetService("Lighting")
 local TweenService      = game:GetService("TweenService")
+local SoundService      = game:GetService("SoundService")
+
+local sfxGroup = SoundService:WaitForChild("SFX")
+
+-- ⚠️ ID PLACEHOLDER (même pattern que shared/UI/UISound.luau) : "rbxassetid://0" est silencieux,
+-- remplacer par un vrai whoosh dès qu'un asset est choisi, rien d'autre à toucher.
+local DASH_WHOOSH_SOUND_ID = "rbxassetid://0"
 
 local player  = Players.LocalPlayer
 local camera  = workspace.CurrentCamera
@@ -139,12 +146,61 @@ local function tryDash()
 	dashRequestEvent:FireServer() -- direction calculée côté serveur (mouvement/orientation du perso, pas la caméra)
 end
 
+-- Whoosh au départ du dash, entendu par tout le monde (positionnel, atténué avec la distance).
+local function playDashWhoosh(hrp: BasePart)
+	if DASH_WHOOSH_SOUND_ID == "rbxassetid://0" then return end -- placeholder non renseigné
+
+	local sound = Instance.new("Sound")
+	sound.Name = "DashWhoosh"
+	sound.SoundId = DASH_WHOOSH_SOUND_ID
+	sound.RollOffMode = Enum.RollOffMode.InverseTapered
+	sound.RollOffMaxDistance = 60
+	sound.Volume = 0.8
+	sound.SoundGroup = sfxGroup
+	sound.Parent = hrp
+	sound.Ended:Once(function() sound:Destroy() end)
+	sound:Play()
+end
+
+-- Gerbe de poussière au point de départ du dash — texture par défaut du ParticleEmitter (asset
+-- intégré à Roblox), même principe que le hit effect côté serveur : aucun asset à uploader.
+local function playDashBurst(hrp: BasePart)
+	local attachment = Instance.new("Attachment")
+	attachment.Name = "DashBurst"
+	attachment.Position = Vector3.new(0, -2.8, 0) -- au niveau des pieds
+	attachment.Parent = hrp
+
+	local particles = Instance.new("ParticleEmitter")
+	particles.Color = ColorSequence.new(Color3.fromRGB(220, 220, 225))
+	particles.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.9),
+		NumberSequenceKeypoint.new(1, 2.4),
+	})
+	particles.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.3),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	particles.Lifetime = NumberRange.new(0.3, 0.5)
+	particles.Speed = NumberRange.new(4, 9)
+	particles.SpreadAngle = Vector2.new(180, 180)
+	particles.Rate = 0
+	particles.Parent = attachment
+
+	particles:Emit(18)
+	task.delay(1, function()
+		attachment:Destroy()
+	end)
+end
+
 -- Traînée visuelle (renforcée : deux brins + largeur/durée calées sur DASH_DURATION), vue par
 -- tout le monde, sur le personnage qui vient de dasher.
 local function playDashTrail(dashPlayer: Player)
 	local char = dashPlayer.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
 	if not hrp then return end
+
+	playDashWhoosh(hrp)
+	playDashBurst(hrp)
 
 	local top = Instance.new("Attachment")
 	top.Position = Vector3.new(0, 1.6, 0)

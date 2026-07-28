@@ -152,12 +152,25 @@ local function getOrBuildAvatar(userId: number): Model?
 		return nil
 	end
 
+	-- Bug moteur Roblox connu (non corrigé) : un WidthScale < 1 sur la description fait apparaître
+	-- un trou entre le bras et le torse en R15 (les Motor6D ne compensent pas la largeur réduite).
+	-- On force donc WidthScale à 1 pour ce présentoir — perte mineure de fidélité sur les avatars
+	-- "fins", mais plus de trou visible.
+	if desc.WidthScale < 1 then
+		desc.WidthScale = 1
+	end
+
 	local ok2, avatarModel = pcall(function()
 		return Players:CreateHumanoidModelFromDescription(desc, Enum.HumanoidRigType.R15)
 	end)
 	if not ok2 or not avatarModel then
 		avatarCache[userId] = false
 		return nil
+	end
+
+	local humanoid = avatarModel:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid:BuildRigFromAttachments()
 	end
 
 	-- Simple présentoir statique : pas de script de personnage (mouvement, animation d'input...),

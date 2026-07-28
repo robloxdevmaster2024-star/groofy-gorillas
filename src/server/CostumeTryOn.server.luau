@@ -6,7 +6,24 @@
 -- Script autonome (auto-exécuté par Roblox comme tous les *.server.luau du dossier), pas de
 -- dépendance au RoundManager : le mannequin est une Part physique du hub, indépendante des rounds.
 
-local mannequin = workspace:WaitForChild("ClownCostume")
+-- WaitForChild seul ne suffit plus : le rangement du Workspace (dossiers Decor/NPCs/...) a mis
+-- ClownCostume sous Workspace.NPCs, pas directement sous Workspace. Recherche récursive avec
+-- attente, même principe que WaitForChild mais qui creuse dans les sous-dossiers.
+local function waitForDescendant(name: string, timeout: number): Instance?
+	local deadline = os.clock() + timeout
+	local found = workspace:FindFirstChild(name, true)
+	while not found and os.clock() < deadline do
+		task.wait(0.1)
+		found = workspace:FindFirstChild(name, true)
+	end
+	return found
+end
+
+local mannequin = waitForDescendant("ClownCostume", 10)
+if not mannequin then
+	warn("[CostumeTryOn] ClownCostume introuvable, script arrêté.")
+	return
+end
 
 -- Le mannequin importé (asset Creator Store) imbrique tout son rig sous un sous-Model nommé
 -- d'après son créateur (ex. ClownCostume.Infinitizing.HumanoidRootPart) plutôt qu'à la racine —
